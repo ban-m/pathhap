@@ -10,7 +10,7 @@ This repository contains 1. implementation of path phasing algorithm and 2. it's
 
 To use CLI, you only need a utf-8 encoded tsv file FILE, which contents RECORDS describes paths as follows:
 
-RECORDS = (<RECORD>\n)^*
+RECORDS = (RECORD\n)^*
 
 RECORD = (ID)\t(NODE:CLUSTER\t)^+
 
@@ -20,6 +20,11 @@ For example,
 RECORD = Test Read\t10:0\t11:0\t2341:13213\t343:324
 
 As you can see, the number of node shouldn't be consective, so, feel easy. The graph containing all of reads would be created on the fly.
+
+```bash
+cargo build --release
+${PWD}/target/release/path_phase --path ${INPUT} > ${OUTPUT}
+```
 
 Output is tsv, consisting RECORD\tCUSTER. CLUSTER is either 0 or 1.
 
