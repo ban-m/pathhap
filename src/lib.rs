@@ -12,6 +12,9 @@ use log::*;
 use std::collections::{HashMap, HashSet};
 mod exact_phase;
 mod find_union;
+mod model;
+use rand::SeedableRng;
+use rand_xoshiro::Xoshiro128StarStar;
 /// Phasing API.
 /// Phase given paths into two haplotypes.
 /// # Example
@@ -21,7 +24,7 @@ mod find_union;
 ///     ("ID3".to_string(), vec![(0, 1), (1, 1), (2, 1), (3, 1)]),
 ///     ("ID4".to_string(), vec![(0, 1), (1, 1), (2, 1), (3, 1)]),
 /// ];
-/// let reuslt = phase(&paths);
+/// let reuslt = phase(&paths, 15, 24);
 /// assert_eq!(
 ///     result,
 ///     vec![
@@ -46,7 +49,7 @@ mod find_union;
 /// );
 /// let path3 = ("ID4".to_string(), vec![(10, 1), (3, 1), (10, 1)]);
 /// let paths = vec![path1, path2, path3, path4];
-/// let reuslt = phase(&paths);
+/// let reuslt = phase(&paths, 15 ,24);
 /// assert_eq!(
 ///     result,
 ///     vec![
@@ -56,14 +59,30 @@ mod find_union;
 ///         ("ID4".to_string(), 1)
 ///     ]
 /// );
-pub fn phase<'a>(paths: &'a [(String, Vec<(u64, u64)>)], max_occ: usize) -> HashMap<&'a str, u8> {
+pub fn phase<'a>(
+    paths: &'a [(String, Vec<(u64, u64)>)],
+    max_occ: usize,
+    seed: u64,
+) -> HashMap<&'a str, u8> {
+    const REPEAT_NUM: usize = 3;
     // First, decompose into each connected component.
-    let components = split_paths(paths);
     let mut result = HashMap::new();
+    let mut rng: Xoshiro128StarStar = SeedableRng::seed_from_u64(seed);
+    use rand::seq::SliceRandom;
+    let mut components = split_paths(paths);
     debug!("NumOfCC\t{}", components.len());
-    for paths in components {
-        result.extend(phase_cc(&paths, max_occ))
+    let mut total_lk = 0.;
+    for paths in components.iter_mut() {
+        paths.shuffle(&mut rng);
+        let (phased_paths, lk) = (0..REPEAT_NUM)
+            .map(|_| phase_cc(&paths, max_occ))
+            .max_by(|x, y| x.1.partial_cmp(&y.1).unwrap())
+            .unwrap();
+        debug!("Maximum likelihood:{:.3}", lk);
+        total_lk += lk;
+        result.extend(phased_paths);
     }
+    debug!("Total log likelihood:{:.3}", total_lk);
     result
 }
 
@@ -97,7 +116,10 @@ fn split_paths(paths: &[(String, Vec<(u64, u64)>)]) -> Vec<Vec<&(String, Vec<(u6
 }
 
 // Phaing connected components.
-fn phase_cc<'a>(paths: &[&'a (String, Vec<(u64, u64)>)], max_occ: usize) -> HashMap<&'a str, u8> {
+fn phase_cc<'a>(
+    paths: &[&'a (String, Vec<(u64, u64)>)],
+    max_occ: usize,
+) -> (HashMap<&'a str, u8>, f64) {
     // Re-numbering nodes.
     debug!("Start");
     let idx2id: HashMap<usize, _> = paths.iter().enumerate().map(|(i, p)| (i, &p.0)).collect();
@@ -125,43 +147,54 @@ fn phase_cc<'a>(paths: &[&'a (String, Vec<(u64, u64)>)], max_occ: usize) -> Hash
         nodes.len()
     );
     // Construct a graph.
-    let mut nodes: HashMap<usize, usize> = {
-        let mut nodes = HashMap::new();
+    // This is the coverage, or occurence, of a node.
+    let mut nodes: Vec<usize> = {
+        let mut nodes = vec![0; nodes.len()];
         for (_, path) in paths.iter() {
-            for &(c, _) in path.iter() {
-                *nodes.entry(c).or_default() += 1;
+            for &(n, _) in path.iter() {
+                nodes[n] += 1;
             }
         }
         nodes
     };
     let mut removed_paths = vec![];
     paths.sort_by_key(|x| x.1.len());
-    while nodes.values().any(|&x| x > max_occ) {
-        let (&max_node, _) = nodes.iter().max_by_key(|x| x.1).unwrap();
+    loop {
+        let (max_node, &max) = nodes.iter().enumerate().max_by_key(|x| x.1).unwrap();
+        if max <= max_occ {
+            break;
+        }
         // Remove shortest path containing max_node.
         let idx: usize = paths
             .iter()
-            .find(|x| x.1.iter().any(|x| x.1 == max_node))
-            .map(|x| x.0)
+            .position(|x| x.1.iter().any(|x| x.0 == max_node))
             .unwrap();
         let path = paths.remove(idx);
-        assert!(path.1.iter().any(|x| x.1 == max_node));
+        assert!(path.1.iter().any(|x| x.0 == max_node));
         for &(n, _) in path.1.iter() {
-            nodes.entry(n).and_modify(|x| *x -= 1);
+            nodes[n] -= 1;
         }
         removed_paths.push(path);
     }
     debug!("Removed:Remaines={}:{}", removed_paths.len(), paths.len());
-    let (mut result, haplotypes) = exact_phase::exact_phase(&paths);
-    debug!("Finishd");
+    let mut result = exact_phase::exact_phase(&paths);
+    // PSEUOD count 1.
+    let model = model::Model::new(&paths, &result, 1);
+    debug!("Finished");
     for (idx, path) in removed_paths {
-        result.push((idx, haplotypes.predict_path(&path)));
+        result.push((idx, model.predict_path(&path)));
+        paths.push((idx, path));
     }
-    result.sort_by_key(|x| x.0);
-    result
+    assert_eq!(paths.len(), idx2id.len());
+    let model = model::Model::new(&paths, &result, 0);
+    let likelihoods = paths.iter().map(|(_, x)| model.likelihood(x)).sum::<f64>();
+    debug!("LK:{:.4}", likelihoods);
+    // result.sort_by_key(|x| x.0);
+    let result: HashMap<_, _> = result
         .iter()
         .map(|&(idx, hap)| (idx2id[&idx].as_str(), hap))
-        .collect()
+        .collect();
+    (result, likelihoods)
 }
 
 #[cfg(test)]
@@ -181,7 +214,7 @@ mod test {
             ("ID3".to_string(), vec![(0, 1), (1, 1), (2, 1), (3, 1)]),
             ("ID4".to_string(), vec![(0, 1), (1, 1), (2, 1), (3, 1)]),
         ];
-        let result = phase(&paths, 14);
+        let result = phase(&paths, 14, 24);
         assert_eq!(result["ID1"], result["ID2"]);
         assert_eq!(result["ID3"], result["ID4"]);
         assert_ne!(result["ID1"], result["ID4"]);
@@ -203,7 +236,7 @@ mod test {
         );
         let path4 = ("ID4".to_string(), vec![(10, 1), (3, 1), (10, 1)]);
         let paths = vec![path1, path2, path3, path4];
-        let result = phase(&paths, 14);
+        let result = phase(&paths, 14, 24);
         assert_eq!(result["ID1"], result["ID2"]);
         assert_eq!(result["ID3"], result["ID4"]);
         assert_ne!(result["ID1"], result["ID4"]);
@@ -280,7 +313,7 @@ mod test {
                 (format!("{}", i), path)
             })
             .collect();
-        let result = phase(&paths, 20);
+        let result = phase(&paths, 20, 24);
         let cluster1 = *result.get("0").unwrap();
         let cluster2: String = format!("{}", path_num - 1);
         let cluster2 = *result.get(cluster2.as_str()).unwrap();
@@ -336,7 +369,7 @@ mod test {
                 (format!("{}", i), path)
             })
             .collect();
-        let result = phase(&paths, 20);
+        let result = phase(&paths, 20, 24);
         let cluster1 = *result.get("0").unwrap();
         let cluster2: String = format!("{}", path_num - 1);
         let cluster2 = *result.get(cluster2.as_str()).unwrap();
@@ -376,7 +409,7 @@ mod test {
                 (format!("{}", i), path)
             })
             .collect();
-        let result = phase(&paths, 20);
+        let result = phase(&paths, 20, 24);
         let cluster1 = *result.get("0").unwrap();
         let cluster2: String = format!("{}", path_num - 1);
         let cluster2 = *result.get(cluster2.as_str()).unwrap();
@@ -432,7 +465,7 @@ mod test {
                 (format!("{}", i), path)
             })
             .collect();
-        let result = phase(&paths, 20);
+        let result = phase(&paths, 20, 24);
         let cluster1 = *result.get("0").unwrap();
         let cluster2: String = format!("{}", path_num - 1);
         let cluster2 = *result.get(cluster2.as_str()).unwrap();
@@ -494,7 +527,7 @@ mod test {
                 (format!("{}", i), path)
             })
             .collect();
-        let result = phase(&paths, 20);
+        let result = phase(&paths, 20, 24);
         let cluster1 = *result.get("0").unwrap();
         let cluster2: String = format!("{}", path_num - 1);
         let cluster2 = *result.get(cluster2.as_str()).unwrap();
@@ -528,7 +561,7 @@ mod test {
                 (format!("{}", i), path)
             })
             .collect();
-        let result = phase(&paths, 20);
+        let result = phase(&paths, 20, 24);
         let cluster1 = *result.get("0").unwrap();
         let cluster2: String = format!("{}", path_num - 1);
         let cluster2 = *result.get(cluster2.as_str()).unwrap();

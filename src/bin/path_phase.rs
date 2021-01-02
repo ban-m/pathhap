@@ -2,6 +2,7 @@ use clap::{App, Arg};
 use std::io::{BufRead, BufReader};
 #[macro_use]
 extern crate log;
+const SEED: u64 = 24;
 fn main() -> std::io::Result<()> {
     let matches = App::new("path_phasing")
         .version("0.1")
@@ -62,7 +63,7 @@ fn main() -> std::io::Result<()> {
         .build_global()
         .unwrap();
     debug!("Begin path phasing");
-    let result = path_phasing::phase(&paths, max_occ);
+    let result = path_phasing::phase(&paths, max_occ, SEED);
     for (id, hap) in result {
         println!("{}\t{}", id, hap);
     }

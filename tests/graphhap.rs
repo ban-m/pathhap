@@ -1,20 +1,43 @@
+#![cfg(test)]
 // This is a test directory to create mock diploid reads and run graph hap algorithm.
 use rand::seq::SliceRandom;
 use rand::{Rng, SeedableRng};
 use rand_xoshiro::Xoroshiro128PlusPlus;
 use std::collections::HashMap;
-fn main() {
-    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("debug")).init();
+#[test]
+fn it_works() {}
+
+#[test]
+fn graphhap_smallscale() {
+    // Parameters.
+    let template_length = 10;
+    let duplication_rate = 0.0;
+    let hap_dup_rate = 0.000;
+    let hap_ins_rate = 0.000;
+    let hap_del_rate = 0.000;
+    let read_num = 100;
+    let min_length = 3;
+    let max_length = 6;
+    let error_rate = 0.0;
+    test(
+        template_length,
+        (duplication_rate, hap_dup_rate, hap_ins_rate, hap_del_rate),
+        (read_num, min_length, max_length, error_rate),
+    );
+}
+
+#[test]
+fn graphhap_2() {
     // Parameters.
     let template_length = 100;
-    let duplication_rate = 0.01;
+    let duplication_rate = 0.0;
     let hap_dup_rate = 0.000;
     let hap_ins_rate = 0.000;
     let hap_del_rate = 0.000;
     let read_num = 1000;
     let min_length = 3;
-    let max_length = 10;
-    let error_rate = 0.1;
+    let max_length = 6;
+    let error_rate = 0.0;
     test(
         template_length,
         (duplication_rate, hap_dup_rate, hap_ins_rate, hap_del_rate),
@@ -94,9 +117,9 @@ fn test(
         })
         .collect();
     let result = path_phasing::phase(&reads, 15, 24);
-    let hap1 = result.get(&"0").unwrap();
+    let hap1 = result.get(&"0");
     let hap2_id = format!("{}", read_num - 1);
-    let hap2 = result.get(hap2_id.as_str()).unwrap();
+    let hap2 = result.get(hap2_id.as_str());
     // {
     // let mut result: Vec<(u64, u8)> = result
     //     .iter()
@@ -108,13 +131,13 @@ fn test(
     let errors = reads
         .iter()
         .enumerate()
-        .filter(|(i, (id, path))| {
+        .filter(|(i, (id, _))| {
             assert!(result.contains_key(id.as_str()), "{}", id);
-            let pred = result.get(id.as_str()).unwrap();
+            let pred = result.get(id.as_str());
             let answer = if 2 * i / read_num == 0 { hap1 } else { hap2 };
             match answer != pred {
                 true => {
-                    eprintln!("{}\t{}\t{}\t{:?}", hap1, pred, i, path);
+                    eprintln!("{:?}\t{:?}\t{}", hap1, pred, i);
                     true
                 }
                 x => x,
@@ -142,7 +165,7 @@ fn sim_read<R: Rng>(
         .take(length)
         .map(|&(n, c)| {
             if rng.gen_bool(error_rate) {
-                (n, rng.gen::<u64>() % (unit_counts[&n] + 1))
+                (n, rng.gen::<u64>() % unit_counts[&n])
             } else {
                 (n, c)
             }
