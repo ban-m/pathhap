@@ -21,7 +21,7 @@ pub fn exact_phase(paths_w_id: &[(usize, Vec<(usize, usize)>)]) -> Vec<(usize, u
         + 1;
     // BFS to determine the
     // CAUSION: ARRAYS SHOULD BE ALIGNED W.R.T BFS ORDER!
-    let (boundary_reads, boundary_nodes, node_reads, ordered_nodes, remainings) =
+    let (boundary_reads, boundary_nodes, node_reads, ordered_nodes, _remainings) =
         determine_traversal_order(&paths);
     for (i, (((br, bn), nr), on)) in boundary_reads
         .iter()
@@ -296,7 +296,7 @@ type OrderInformation = (
 );
 
 // Determine the order in which we traverse.
-// Specifically, we traverse nodes first by BFS order, 
+// Specifically, we traverse nodes first by BFS order,
 fn determine_traversal_order(paths: &[&[(usize, usize)]]) -> OrderInformation {
     let num_nodes = paths
         .iter()

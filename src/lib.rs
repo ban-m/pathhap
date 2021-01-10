@@ -10,6 +10,7 @@
 //! 5. It predicts the clustering of discarded reads.
 use log::*;
 use std::collections::{HashMap, HashSet};
+pub mod em_progressive;
 mod exact_phase;
 mod find_union;
 mod model;
@@ -64,7 +65,7 @@ pub fn phase<'a>(
     max_occ: usize,
     seed: u64,
 ) -> HashMap<&'a str, u8> {
-    const REPEAT_NUM: usize = 3;
+    const REPEAT_NUM: usize = 1;
     // First, decompose into each connected component.
     let mut result = HashMap::new();
     let mut rng: Xoshiro128StarStar = SeedableRng::seed_from_u64(seed);
@@ -141,6 +142,16 @@ fn phase_cc<'a>(
             (id, path)
         })
         .collect();
+    if false {
+        let mut rng: Xoshiro128StarStar = SeedableRng::seed_from_u64(24);
+        let (result, lk) = em_progressive::em_progressive_clustering(&paths, &mut rng);
+        let result: HashMap<_, _> = result
+            .iter()
+            .map(|&(idx, hap)| (idx2id[&idx].as_str(), hap))
+            .collect();
+
+        return (result, lk);
+    }
     debug!(
         "Renaming {} paths. number of nodes:{}",
         paths.len(),
