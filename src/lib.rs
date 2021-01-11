@@ -67,12 +67,13 @@ pub fn phase<'a>(
 ) -> HashMap<&'a str, u8> {
     const REPEAT_NUM: usize = 1;
     // First, decompose into each connected component.
-    let mut result = HashMap::new();
+    let mut result: HashMap<&str, u8> = HashMap::new();
     let mut rng: Xoshiro128StarStar = SeedableRng::seed_from_u64(seed);
     use rand::seq::SliceRandom;
     let mut components = split_paths(paths);
     debug!("NumOfCC\t{}", components.len());
     let mut total_lk = 0.;
+    debug!("total_lk,{}",total_lk);
     for paths in components.iter_mut() {
         paths.shuffle(&mut rng);
         let (phased_paths, lk) = (0..REPEAT_NUM)
