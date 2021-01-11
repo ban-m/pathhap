@@ -66,7 +66,7 @@ impl Model {
             .0
     }
     pub fn new(
-        paths: &[(usize, Vec<(usize, usize)>)],
+        paths: &[(usize, &[(usize, usize)])],
         haplotypes: &[(usize, u8)],
         pseudo_count: u32,
     ) -> Self {

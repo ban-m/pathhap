@@ -67,7 +67,7 @@ pub fn phase<'a>(
     // First, decompose into each connected component.
     let mut rng: Xoshiro128StarStar = SeedableRng::seed_from_u64(seed);
     use rand::seq::SliceRandom;
-    let mut components = split_paths(paths);
+    let components = split_paths(paths);
     debug!("NumOfCC\t{}", components.len());
     let mut total_lk = 0.;
     let phasing: HashMap<_, u8> = components
@@ -125,7 +125,7 @@ fn split_paths(paths: &[(String, Vec<(u64, u64)>)]) -> Vec<Vec<&(String, Vec<(u6
 // format so that it has continuous node id, continuoud cluster number.
 // The order of the input path should be the same as the output order.
 // To see the example, see test.
-fn normalize_path(paths: &[(String, Vec<(u64, u64)>)]) -> Vec<Vec<(usize, usize)>> {
+fn normalize_path(paths: &[&(String, Vec<(u64, u64)>)]) -> Vec<Vec<(usize, usize)>> {
     let nodes: HashMap<u64, usize> = {
         let mut nodes: Vec<_> = paths
             .iter()
@@ -136,7 +136,7 @@ fn normalize_path(paths: &[(String, Vec<(u64, u64)>)]) -> Vec<Vec<(usize, usize)
         nodes.dedup();
         nodes.into_iter().enumerate().map(|(i, x)| (x, i)).collect()
     };
-    let mut clusters: Vec<HashMap<u64, usize>> = {
+    let clusters: Vec<HashMap<u64, usize>> = {
         let mut cluster: Vec<Vec<_>> = vec![vec![]; nodes.len()];
         for (_, path) in paths.iter() {
             for (n, c) in path.iter() {
@@ -154,7 +154,7 @@ fn normalize_path(paths: &[(String, Vec<(u64, u64)>)]) -> Vec<Vec<(usize, usize)
     };
     paths
         .iter()
-        .map(|(id, path)| {
+        .map(|(_, path)| {
             let path: Vec<_> = path
                 .iter()
                 .map(|(n, c)| {
@@ -184,9 +184,10 @@ mod test {
             ("1".to_string(), vec![(0, 1), (2, 4), (3, 1), (6, 1)]),
             ("2".to_string(), vec![(6, 3), (3, 5)]),
         ];
+        let paths: Vec<_> = paths.iter().collect();
         let normed_paths = normalize_path(&paths);
         assert_eq!(normed_paths[0], vec![(0, 0), (1, 0), (2, 0), (3, 0)]);
-        assert_eq!(normed_paths[1], vec![(0, 1), (1, 2), (2, 1), (3, 1)]);
+        assert_eq!(normed_paths[1], vec![(0, 1), (1, 1), (2, 1), (3, 1)]);
         assert_eq!(normed_paths[2], vec![(3, 2), (2, 2)]);
     }
     #[test]
