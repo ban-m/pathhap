@@ -13,7 +13,6 @@ use std::collections::{HashMap, HashSet};
 pub mod em_progressive;
 mod exact_phase;
 mod find_union;
-mod model;
 use rand::SeedableRng;
 use rand_xoshiro::Xoshiro128StarStar;
 /// Phasing API.
@@ -65,27 +64,32 @@ pub fn phase<'a>(
     max_occ: usize,
     seed: u64,
 ) -> HashMap<&'a str, u8> {
-    const REPEAT_NUM: usize = 1;
     // First, decompose into each connected component.
-    let mut result: HashMap<&str, u8> = HashMap::new();
     let mut rng: Xoshiro128StarStar = SeedableRng::seed_from_u64(seed);
     use rand::seq::SliceRandom;
     let mut components = split_paths(paths);
     debug!("NumOfCC\t{}", components.len());
     let mut total_lk = 0.;
-    debug!("total_lk,{}",total_lk);
-    for paths in components.iter_mut() {
-        paths.shuffle(&mut rng);
-        let (phased_paths, lk) = (0..REPEAT_NUM)
-            .map(|_| phase_cc(&paths, max_occ))
-            .max_by(|x, y| x.1.partial_cmp(&y.1).unwrap())
-            .unwrap();
-        debug!("Maximum likelihood:{:.3}", lk);
-        total_lk += lk;
-        result.extend(phased_paths);
-    }
+    let phasing: HashMap<_, u8> = components
+        .iter()
+        .map(|paths| {
+            let mut normed_paths = normalize_path(paths);
+            normed_paths.shuffle(&mut rng);
+            let (phased_paths, lk) = exact_phase::phase_cc(&normed_paths, max_occ);
+            debug!("Maximum likelihood:{:.3}", lk);
+            total_lk += lk;
+            phased_paths
+                .iter()
+                .zip(paths)
+                .map(|(&phase, (id, _))| (id.as_str(), phase))
+                .collect::<Vec<(&str, u8)>>()
+        })
+        .fold(HashMap::new(), |mut acc, y| {
+            acc.extend(y);
+            acc
+        });
     debug!("Total log likelihood:{:.3}", total_lk);
-    result
+    phasing
 }
 
 fn split_paths(paths: &[(String, Vec<(u64, u64)>)]) -> Vec<Vec<&(String, Vec<(u64, u64)>)>> {
@@ -117,96 +121,51 @@ fn split_paths(paths: &[(String, Vec<(u64, u64)>)]) -> Vec<Vec<&(String, Vec<(u6
     cluster
 }
 
-// Phaing connected components.
-fn phase_cc<'a>(
-    paths: &[&'a (String, Vec<(u64, u64)>)],
-    max_occ: usize,
-) -> (HashMap<&'a str, u8>, f64) {
-    // Re-numbering nodes.
-    debug!("Start");
-    let idx2id: HashMap<usize, _> = paths.iter().enumerate().map(|(i, p)| (i, &p.0)).collect();
+// Normalize path. In other words, each path would be converted into a
+// format so that it has continuous node id, continuoud cluster number.
+// The order of the input path should be the same as the output order.
+// To see the example, see test.
+fn normalize_path(paths: &[(String, Vec<(u64, u64)>)]) -> Vec<Vec<(usize, usize)>> {
     let nodes: HashMap<u64, usize> = {
-        let nodes: HashSet<_> = paths.iter().flat_map(|x| x.1.iter().map(|x| x.0)).collect();
-        let mut nodes: Vec<_> = nodes.into_iter().collect();
-        nodes.sort();
-        nodes
-            .into_iter()
-            .enumerate()
-            .map(|(idx, n)| (n, idx))
-            .collect()
-    };
-    let mut paths: Vec<(usize, Vec<(usize, usize)>)> = paths
-        .iter()
-        .enumerate()
-        .map(|(id, (_, path))| {
-            let path: Vec<_> = path.iter().map(|&(n, c)| (nodes[&n], c as usize)).collect();
-            (id, path)
-        })
-        .collect();
-    if false {
-        let mut rng: Xoshiro128StarStar = SeedableRng::seed_from_u64(24);
-        let (result, lk) = em_progressive::em_progressive_clustering(&paths, &mut rng);
-        let result: HashMap<_, _> = result
+        let mut nodes: Vec<_> = paths
             .iter()
-            .map(|&(idx, hap)| (idx2id[&idx].as_str(), hap))
+            .flat_map(|(_, p)| p.iter())
+            .map(|x| x.0)
             .collect();
-
-        return (result, lk);
-    }
-    debug!(
-        "Renaming {} paths. number of nodes:{}",
-        paths.len(),
-        nodes.len()
-    );
-    // Construct a graph.
-    // This is the coverage, or occurence, of a node.
-    let mut nodes: Vec<usize> = {
-        let mut nodes = vec![0; nodes.len()];
+        nodes.sort();
+        nodes.dedup();
+        nodes.into_iter().enumerate().map(|(i, x)| (x, i)).collect()
+    };
+    let mut clusters: Vec<HashMap<u64, usize>> = {
+        let mut cluster: Vec<Vec<_>> = vec![vec![]; nodes.len()];
         for (_, path) in paths.iter() {
-            for &(n, _) in path.iter() {
-                nodes[n] += 1;
+            for (n, c) in path.iter() {
+                cluster[nodes[n]].push(*c);
             }
         }
-        nodes
+        cluster.iter_mut().for_each(|xs| {
+            xs.sort();
+            xs.dedup();
+        });
+        cluster
+            .into_iter()
+            .map(|xs| xs.into_iter().enumerate().map(|(x, y)| (y, x)).collect())
+            .collect()
     };
-    let mut removed_paths = vec![];
-    paths.sort_by_key(|x| x.1.len());
-    loop {
-        let (max_node, &max) = nodes.iter().enumerate().max_by_key(|x| x.1).unwrap();
-        if max <= max_occ {
-            break;
-        }
-        // Remove shortest path containing max_node.
-        let idx: usize = paths
-            .iter()
-            .position(|x| x.1.iter().any(|x| x.0 == max_node))
-            .unwrap();
-        let path = paths.remove(idx);
-        assert!(path.1.iter().any(|x| x.0 == max_node));
-        for &(n, _) in path.1.iter() {
-            nodes[n] -= 1;
-        }
-        removed_paths.push(path);
-    }
-    debug!("Removed:Remaines={}:{}", removed_paths.len(), paths.len());
-    let mut result = exact_phase::exact_phase(&paths);
-    // PSEUOD count 1.
-    let model = model::Model::new(&paths, &result, 1);
-    debug!("Finished");
-    for (idx, path) in removed_paths {
-        result.push((idx, model.predict_path(&path)));
-        paths.push((idx, path));
-    }
-    assert_eq!(paths.len(), idx2id.len());
-    let model = model::Model::new(&paths, &result, 0);
-    let likelihoods = paths.iter().map(|(_, x)| model.likelihood(x)).sum::<f64>();
-    debug!("LK:{:.4}", likelihoods);
-    // result.sort_by_key(|x| x.0);
-    let result: HashMap<_, _> = result
+    paths
         .iter()
-        .map(|&(idx, hap)| (idx2id[&idx].as_str(), hap))
-        .collect();
-    (result, likelihoods)
+        .map(|(id, path)| {
+            let path: Vec<_> = path
+                .iter()
+                .map(|(n, c)| {
+                    let node = nodes[n];
+                    let cluster = clusters[node][c];
+                    (node, cluster)
+                })
+                .collect();
+            path
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -217,6 +176,18 @@ mod test {
     #[test]
     fn it_works() {
         assert!(true);
+    }
+    #[test]
+    fn normalize_path_test() {
+        let paths: Vec<_> = vec![
+            ("0".to_string(), vec![(0, 0), (2, 3), (3, 0), (6, 0)]),
+            ("1".to_string(), vec![(0, 1), (2, 4), (3, 1), (6, 1)]),
+            ("2".to_string(), vec![(6, 3), (3, 5)]),
+        ];
+        let normed_paths = normalize_path(&paths);
+        assert_eq!(normed_paths[0], vec![(0, 0), (1, 0), (2, 0), (3, 0)]);
+        assert_eq!(normed_paths[1], vec![(0, 1), (1, 2), (2, 1), (3, 1)]);
+        assert_eq!(normed_paths[2], vec![(3, 2), (2, 2)]);
     }
     #[test]
     fn phase_test_1() {

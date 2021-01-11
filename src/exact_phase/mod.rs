@@ -4,39 +4,280 @@
 // all reads should be eigher S or T haplotype and we can reconstruct the haplotype S.
 use log::debug;
 // use rayon::prelude::*;
-use std::collections::{HashSet, VecDeque};
-// Exact phasing.
-pub fn exact_phase(paths_w_id: &[(usize, Vec<(usize, usize)>)]) -> Vec<(usize, u8)> {
-    // Strip ids from paths.
-    debug!("Begin");
-    let paths: Vec<&[(usize, usize)]> = paths_w_id.iter().map(|x| x.1.as_slice()).collect();
+use std::collections::{HashMap, HashSet, VecDeque};
+mod model;
+
+fn number_of_nodes(paths: &[Vec<(usize, usize)>]) -> usize {
+    paths
+        .iter()
+        .filter_map(|x| x.iter().map(|x| x.0).max())
+        .max()
+        .unwrap()
+        + 1
+}
+
+// Phaing connected components.
+pub fn phase_cc(paths: &[Vec<(usize, usize)>], max_occ: usize) -> (Vec<u8>, f64) {
+    // Convert paths into paths with ID.
+    debug!("Start");
+    // Construct a graph.
     for (idx, p) in paths.iter().enumerate() {
         debug!("Path:{}:{:?}", idx, p);
     }
-    let num_of_nodes = paths
-        .iter()
-        .flat_map(|x| x.iter().map(|x| x.0))
-        .max()
-        .unwrap()
-        + 1;
+    let num_of_nodes = number_of_nodes(paths);
     // BFS to determine the
     // CAUSION: ARRAYS SHOULD BE ALIGNED W.R.T BFS ORDER!
-    let (boundary_reads, boundary_nodes, node_reads, ordered_nodes, _remainings) =
-        determine_traversal_order(&paths);
-    for (i, (((br, bn), nr), on)) in boundary_reads
+    let node_traverse_order = determine_traversal_order(num_of_nodes, paths);
+    let (path_to_be_used, path_unused) = downsampling_up_to(&node_traverse_order, paths, max_occ);
+    let node_paths: Vec<_> = node_traverse_order
+        .iter()
+        .map(|&n| get_paths_on(&path_to_be_used, &vec![n]))
+        .collect();
+    let boundary_nodes: Vec<_> = get_boundary_nodes_on(&node_traverse_order, &path_to_be_used);
+    let boundary_paths: Vec<_> = boundary_nodes
+        .iter()
+        .map(|bn| get_paths_on(&path_to_be_used, bn))
+        .collect();
+    for (i, (((br, bn), nr), on)) in boundary_paths
         .iter()
         .zip(boundary_nodes.iter())
-        .zip(node_reads.iter())
-        .zip(ordered_nodes.iter())
+        .zip(node_paths.iter())
+        .zip(node_traverse_order.iter())
         .enumerate()
     {
         debug!("{}\t{:?}\t{:?}\t{:?}\t{}", i, br, bn, nr, on);
     }
-    // calculate each bipartition on each nodes.
-    let ls_node: Vec<Vec<_>> = ordered_nodes
+    debug!(
+        "Removed:Remaines={}:{}",
+        path_unused.len(),
+        path_to_be_used.len()
+    );
+    let mut result = exact_phase(
+        &path_to_be_used,
+        &node_traverse_order,
+        &node_paths,
+        &boundary_nodes,
+        &boundary_paths,
+    );
+    // PSEUOD count 1.
+    let model = model::Model::new(&path_to_be_used, &result, 1);
+    debug!("Finished");
+    for (idx, path) in path_unused {
+        result.push((idx, model.predict_path(&path)));
+        paths.push((idx, path));
+    }
+    result.sort_by_key(|x| x.0);
+    let mut paths_with_id = path_to_be_used;
+    paths_with_id.append(&mut path_unused);
+    paths_with_id.sort_by_key(|x| x.0);
+    paths_with_id
         .iter()
-        .zip(node_reads.iter())
-        .map(|(node, reads_on_node)| enumerate_all_bipartition(&paths, reads_on_node, *node))
+        .zip(result.iter())
+        .for_each(|(x, y)| assert_eq!(x.0, y.0));
+    let model = model::Model::new(&paths_with_id, &result, 0);
+    let likelihoods = paths.iter().map(|x| model.likelihood(x)).sum::<f64>();
+    debug!("LK:{:.4}", likelihoods);
+    let result: Vec<u8> = result.into_iter().map(|x| x.0).collect();
+    (result, likelihoods)
+}
+
+// BFS and return the order.
+// We choose the un-traversed smallest children at each step.
+fn determine_traversal_order(num_of_nodes: usize, paths: &[Vec<(usize, usize)>]) -> Vec<usize> {
+    let mut edges = vec![HashSet::new(); num_of_nodes];
+    for path in paths.iter() {
+        for w in path.windows(2) {
+            let (from, to) = (w[0].0, w[1].0);
+            edges[from].insert(to);
+            edges[to].insert(from);
+        }
+    }
+    let edges: Vec<Vec<_>> = edges
+        .into_iter()
+        .map(|eds| {
+            let mut eds: Vec<_> = eds.into_iter().collect();
+            eds.sort();
+            eds
+        })
+        .collect();
+    bfs(num_of_nodes, &edges)
+}
+
+// Breadth first search and returns the arriving order.
+fn bfs(num_of_nodes: usize, edges: &[Vec<usize>]) -> Vec<usize> {
+    let mut order = vec![];
+    let mut is_arrived = vec![false; num_of_nodes];
+    let mut queue = VecDeque::new();
+    let start_node = edges
+        .iter()
+        .enumerate()
+        .find(|(_, x)| x.len() == 1)
+        .map(|x| x.0)
+        .unwrap_or(0);
+    queue.push_back(start_node);
+    is_arrived[start_node] = true;
+    while !queue.is_empty() {
+        let node = queue.pop_front().unwrap();
+        order.push(node);
+        for &to in edges[node].iter() {
+            if !is_arrived[to] {
+                is_arrived[to] = true;
+                queue.push_back(to);
+            }
+        }
+    }
+    assert!(is_arrived.iter().all(|&x| x));
+    order
+}
+
+type PathWithID<'a> = (usize, &'a [(usize, usize)]);
+fn downsampling_up_to<'a>(
+    order: &[usize],
+    paths: &'a [Vec<(usize, usize)>],
+    max_occ: usize,
+) -> (Vec<PathWithID<'a>>, Vec<PathWithID<'a>>) {
+    let mut reads_to_be_used: Vec<_> = paths.iter().map(|p| p.as_slice()).enumerate().collect();
+    let boundary_nodes = get_boundary_nodes_on(&order, &reads_to_be_used);
+    let boundary_paths: Vec<_> = boundary_nodes
+        .iter()
+        .map(|bn| get_paths_on(&reads_to_be_used, bn))
+        .collect();
+    let mut reads_unused = vec![];
+    let mut edge_counts: HashMap<(usize, usize), u32> = {
+        let mut count = HashMap::new();
+        for path in paths.iter() {
+            for w in path.windows(2) {
+                let (f, t) = ((w[0].0).min(w[1].0), (w[0].0).max(w[0].1));
+                *count.entry((f, t)).or_default() += 1;
+            }
+        }
+        count
+    };
+    // ReadID => Boundary ID.
+    let reverse_index = {
+        let mut reverse_index = vec![vec![]; reads_to_be_used.len()];
+        for (i, reads) in boundary_paths.iter().enumerate() {
+            for &id in reads.iter() {
+                reverse_index[id].push(i);
+            }
+        }
+        reverse_index
+    };
+    let mut boundary_paths: Vec<_> = boundary_paths.iter().map(|x| x.len()).collect();
+    reads_to_be_used.sort_by_key(|x| x.1.len());
+    loop {
+        let (idx, &max) = boundary_paths
+            .iter()
+            .enumerate()
+            .max_by_key(|x| x.1)
+            .unwrap();
+        if max <= max_occ {
+            break;
+        }
+        let (removed_path_id, removed_path) =
+            {
+                let rm_id = reads_to_be_used.iter().zip(reverse_index.iter()).position(
+                    |((_, path), bs)| {
+                        let on_max_boundary = bs.contains(idx);
+                        let ok_to_remove = path.windows(2).all(|w| {
+                            let (f, t) = ((w[0].0).min(w[1].0), (w[0].0).max(w[0].1));
+                            edge_counts.get(&(f, t)).unwrap_or(false) > 0
+                        });
+                        on_max_boundary && ok_to_remove
+                    },
+                );
+                match rm_id {
+                    Some(idx) => reads_to_be_used.remove(idx),
+                    None => break,
+                }
+            };
+        for &b in reverse_index[removed_path_id].iter() {
+            boundary_paths[b] -= 1;
+        }
+        for w in removed_path.windows(2) {
+            let (f, t) = ((w[0].0).min(w[1].0), (w[0].0).max(w[0].1));
+            *edge_counts.entry((f, t)).or_default() -= 1;
+        }
+        reads_unused.push((removed_path_id, removed_path));
+    }
+    (reads_to_be_used, reads_unused)
+}
+
+fn get_boundary_nodes_on(order: &[usize], paths: &[(usize, &[(usize, usize)])]) -> Vec<Vec<usize>> {
+    let edges: HashSet<(usize, usize)> = {
+        let mut edges = HashSet::new();
+        for path in paths.iter() {
+            for w in path.windows(2) {
+                edges.insert((w[0].0, w[1].0));
+            }
+        }
+        edges
+    };
+    (0..order.len())
+        .map(|i| match i + 1 == order.len() {
+            true => vec![],
+            false => get_boundary_nodes(&paths, &order, i, &edges),
+        })
+        .collect()
+}
+
+// Take P={p_1,..,p_n}, V={v_1, ...,v_m}, i, and edges E, then
+// let U = {v_1,..., v_i} and return
+// D(U) = {u \in U | there is some node w not in U such that (w,u) \in E,
+//                   there is some path such that it contains path from v_{i+1} <-> u}
+fn get_boundary_nodes(
+    paths: &[(usize, Vec<(usize, usize)>)],
+    order: &[usize],
+    iteration: usize,
+    edges: &HashSet<(usize, usize)>,
+) -> Vec<usize> {
+    assert!(iteration + 1 < order.len());
+    let next_node = iteration + 1;
+    order
+        .iter()
+        .take(iteration)
+        .filter(|&&node| {
+            let is_connected_to_outer = order
+                .iter()
+                .skip(iteration)
+                .any(|m| edges.contains(&(node, m) || edges.contains(&(node, m))));
+            let reach_to_next_node = paths.iter().any(|(_, path)| {
+                let contain_node = path.iter().any(|&(n, _)| n == node);
+                let contain_next = path.iter().any(|&(n, _)| n == next_node);
+                contain_node && contain_next
+            });
+            is_connected_to_outer && reach_to_next_node
+        })
+        .copied()
+        .collect()
+}
+
+fn get_paths_on(paths: &[(usize, &[(usize, usize)])], nodes: &[usize]) -> Vec<usize> {
+    let nodes: HashSet<usize> = nodes.iter().copied().collect();
+    let mut paths: Vec<_> = paths
+        .iter()
+        .filter(|(_, path)| path.iter().any(|(n, _)| nodes.contains(n)))
+        .map(|&(id, _)| id)
+        .collect();
+    paths.sort();
+    paths
+}
+
+// Exact phasing.
+pub fn exact_phase(
+    paths: &[(usize, &[(usize, usize)])],
+    order: &[usize],
+    node_paths: &[Vec<usize>],
+    boundary_nodes: &[Vec<usize>],
+    boundary_paths: &[Vec<usize>],
+) -> Vec<(usize, u8)> {
+    // Strip ids from paths.
+    debug!("Begin");
+    // calculate each bipartition on each nodes.
+    let ls_node: Vec<Vec<_>> = order
+        .iter()
+        .zip(node_paths.iter())
+        .map(|(node, reads_on_node)| enumerate_all_bipartition(&paths, node_paths, *node))
         .collect();
     assert!(ls_node.iter().all(|xs| xs.iter().all(|&x| x < 0.000001)));
     debug!("{:?}", ordered_nodes);
@@ -228,7 +469,7 @@ pub fn exact_phase(paths_w_id: &[(usize, Vec<(usize, usize)>)]) -> Vec<(usize, u
 }
 
 fn enumerate_all_bipartition(
-    paths: &[&[(usize, usize)]],
+    paths: &[(usize, &[(usize, usize)])],
     path_indices: &PathSet,
     node: usize,
 ) -> Vec<f64> {
@@ -297,22 +538,7 @@ type OrderInformation = (
 
 // Determine the order in which we traverse.
 // Specifically, we traverse nodes first by BFS order,
-fn determine_traversal_order(paths: &[&[(usize, usize)]]) -> OrderInformation {
-    let num_nodes = paths
-        .iter()
-        .flat_map(|x| x.iter().map(|x| x.0))
-        .max()
-        .unwrap()
-        + 1;
-    let mut edges = vec![HashSet::new(); num_nodes];
-    for path in paths.iter() {
-        for w in path.windows(2) {
-            let (from, to) = (w[0].0, w[1].0);
-            edges[from].insert(to);
-            edges[to].insert(from);
-        }
-    }
-    let (boundary_nodes, bfs_order) = breadth_first_search_inner(&edges, num_nodes);
+fn determine_traversal_order(paths: &[(usize, &[(usize, usize)])]) -> OrderInformation {
     let boundary_reads: Vec<_> = boundary_nodes
         .iter()
         .map(|nodes| {
@@ -354,56 +580,6 @@ fn determine_traversal_order(paths: &[&[(usize, usize)]]) -> OrderInformation {
         bfs_order,
         vec![],
     )
-}
-
-fn breadth_first_search_inner(
-    edges: &[HashSet<usize>],
-    num_of_nodes: usize,
-) -> (Vec<Nodes>, Vec<usize>) {
-    let order = bfs(edges, num_of_nodes);
-    let mut current_set = HashSet::new();
-    let boundary_nodes: Vec<_> = order
-        .iter()
-        .map(|&node| {
-            current_set.insert(node);
-            let boundary: HashSet<_> = current_set
-                .iter()
-                .filter(|&&n| {
-                    // Check if there is v, not in `current_set`.
-                    edges[n].iter().any(|to| !current_set.contains(to))
-                })
-                .copied()
-                .collect();
-            Nodes { nodes: boundary }
-        })
-        .collect();
-    (boundary_nodes, order)
-}
-
-// Breadth first search and returns the arriving order.
-fn bfs(edges: &[HashSet<usize>], num_of_nodes: usize) -> Vec<usize> {
-    let mut order = vec![];
-    let mut is_arrived = vec![false; num_of_nodes];
-    let mut queue = VecDeque::new();
-    let start_node = edges
-        .iter()
-        .enumerate()
-        .find(|(_, x)| x.len() == 1)
-        .map(|x| x.0)
-        .unwrap_or(0);
-    queue.push_back(start_node);
-    is_arrived[start_node] = true;
-    while !queue.is_empty() {
-        let node = queue.pop_front().unwrap();
-        order.push(node);
-        for &to in edges[node].iter() {
-            if !is_arrived[to] {
-                is_arrived[to] = true;
-                queue.push_back(to);
-            }
-        }
-    }
-    order
 }
 
 #[derive(Clone, Default)]
@@ -499,6 +675,52 @@ pub mod test {
     use super::*;
     use std::collections::HashMap;
     #[test]
+    fn number_of_nodes_test() {
+        let paths = vec![vec![(0, 1), (1, 0), (2, 0)], vec![(0, 1), (1, 1), (3, 0)]];
+        let num_of_nodes = number_of_nodes(&paths);
+        assert_eq!(number_of_nodes, 4);
+    }
+    #[test]
+    fn traversal_order_test() {
+        let paths: Vec<Vec<(usize, usize)>> = vec![vec![0, 1, 2, 3, 2, 4]]
+            .into_iter()
+            .map(|xs| xs.into_iter().map(|x| (x, 0)).collect())
+            .collect();
+        let order = determine_traversal_order(5, &paths);
+        assert_eq!(order, vec![0, 1, 2, 3, 4]);
+        let paths: Vec<Vec<usize>> = vec![
+            vec![1, 0],
+            vec![0, 3],
+            vec![5, 3],
+            vec![3, 4],
+            vec![4, 2],
+            vec![2, 5],
+            vec![4, 2, 6],
+        ]
+        .into_iter()
+        .map(|xs| xs.into_iter().map(|x| (x, 0)).collect())
+        .collect();
+        let order = determine_traversal_order(7, &paths);
+        assert_eq!(order, vec![1, 0, 3, 4, 5, 2, 6]);
+    }
+    #[test]
+    fn bfs_test() {
+        let edges = vec![vec![1], vec![0, 2, 3, 4], vec![1, 4], vec![1], vec![1, 2]];
+        let order = bfs(5, &edges);
+        assert_eq!(order, vec![0, 1, 2, 3, 4]);
+        let edges = vec![
+            vec![1, 3],
+            vec![0],
+            vec![4, 5, 6],
+            vec![0, 4, 5],
+            vec![2, 3],
+            vec![2, 3],
+            vec![2],
+        ];
+        let order = bfs(7, &edges);
+        assert_eq!(order, vec![1, 0, 3, 4, 5, 2, 6]);
+    }
+    #[test]
     fn bfs_test() {
         let num_nodes = 7;
         let edges: Vec<HashSet<usize>> = vec![
@@ -526,6 +748,50 @@ pub mod test {
             arrived_nodes.push(i);
         }
         assert!(count.values().all(|&x| x == 1));
+    }
+    #[test]
+    fn get_boundary_paths_test() {
+        let paths = vec![
+            vec![1, 2, 6, 0],    // 0
+            vec![2, 6, 0, 7],    // 1
+            vec![6, 0, 7, 9],    // 2
+            vec![8, 9, 7, 0],    // 3
+            vec![1, 2, 4, 5],    // 4
+            vec![4, 5, 6, 9, 8], // 5
+            vec![6, 5, 4, 2, 1], // 6
+        ]
+        .into_iter()
+        .map(|ps| ps.into_iter().map(|x| (x, 0)).collect())
+        .enumerate()
+        .collect();
+        let order = vec![1, 2, 4, 6, 5, 0, 3, 7, 9, 8];
+        let mut edges: HashMap<usize, usize> = HashMap::new();
+        edges.insert(1, 2);
+        edges.insert(2, 6);
+        edges.insert(6, 0);
+        edges.insert(0, 7);
+        edges.insert(7, 9);
+        edges.insert(9, 8);
+        edges.insert(8, 9);
+        edges.insert(9, 6);
+        edges.insert(6, 5);
+        edges.insert(5, 4);
+        edges.insert(4, 2);
+        edges.insert(2, 1);
+        assert_eq!(get_boundary_nodes(&paths, &order, 0, &edges), vec![1]);
+        assert_eq!(get_boundary_nodes(&paths, &order, 4, &edges), vec![6]);
+        assert_eq!(get_boundary_nodes(&paths, &order, 7, &edges), vec![6, 7]);
+        assert_eq!(get_boundary_nodes(&paths, &order, 9, &edges), vec![]);
+        assert_eq!(get_boundary_paths(&paths, &order, 0, &edges), vec![0, 4]);
+        assert_eq!(get_boundary_paths(&paths, &order, 3, &edges), vec![4, 5, 6]);
+        let nodes = get_boundary_nodes(&paths, &order, 6, &edges);
+        assert_eq!(get_paths_on(&paths, nodes), vec![0, 1, 2, 3,]);
+        let nodes = get_boundary_nodes(&paths, &order, 8, &edges);
+        assert_eq!(get_paths_on(&paths, &nodes), vec![2, 3, 5,]);
+        let nodes = get_boundary_nodes(&paths, &order, 9, &edges);
+        assert_eq!(get_paths_on(&paths, &nodes), vec![]);
+        let nodes = get_boundary_nodes(&paths, &order, 2, &edges);
+        assert_eq!(get_paths_on(&paths, &nodes), vec![0, 1, 4, 6]);
     }
     #[test]
     fn convet_test() {}
