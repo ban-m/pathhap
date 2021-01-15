@@ -21,9 +21,6 @@ pub fn phase_cc(paths: &[Vec<(usize, usize)>], max_occ: usize) -> (Vec<u8>, f64)
     // Convert paths into paths with ID.
     debug!("Start");
     // Construct a graph.
-    for (idx, p) in paths.iter().enumerate() {
-        debug!("Path:{}:{:?}", idx, p);
-    }
     let num_of_nodes = number_of_nodes(paths);
     // BFS to determine the
     // CAUSION: ARRAYS SHOULD BE ALIGNED W.R.T BFS ORDER!
@@ -38,15 +35,6 @@ pub fn phase_cc(paths: &[Vec<(usize, usize)>], max_occ: usize) -> (Vec<u8>, f64)
         .iter()
         .map(|bn| get_paths_on(&path_to_be_used, bn))
         .collect();
-    for (i, (((br, bn), nr), on)) in boundary_paths
-        .iter()
-        .zip(boundary_nodes.iter())
-        .zip(node_paths.iter())
-        .zip(node_traverse_order.iter())
-        .enumerate()
-    {
-        debug!("{}\t{:?}\t{:?}\t{:?}\t{}", i, br, bn, nr, on);
-    }
     debug!(
         "Removed:Remaines={}:{}",
         path_unused.len(),
@@ -139,10 +127,13 @@ fn downsampling_up_to<'a>(
     max_occ: usize,
 ) -> (Vec<PathWithID<'a>>, Vec<PathWithID<'a>>) {
     let mut reads_to_be_used: Vec<_> = paths.iter().map(|p| p.as_slice()).enumerate().collect();
+    reads_to_be_used.sort_by_key(|x| x.1.len());
     let boundary_nodes = get_boundary_nodes_on(&order, &reads_to_be_used);
-    let boundary_paths: Vec<_> = boundary_nodes
+    // ID, not the indices.
+    let boundary_path_ids: Vec<Vec<usize>> = boundary_nodes
         .iter()
         .map(|bn| get_paths_on(&reads_to_be_used, bn))
+        .map(|indices| indices.iter().map(|&i| reads_to_be_used[i].0).collect())
         .collect();
     let mut reads_unused = vec![];
     let mut edge_counts: HashMap<(usize, usize), u32> = {
@@ -158,17 +149,16 @@ fn downsampling_up_to<'a>(
     // ReadID => Boundary ID.
     let reverse_index = {
         let mut reverse_index = vec![vec![]; reads_to_be_used.len()];
-        for (i, reads) in boundary_paths.iter().enumerate() {
-            for &id in reads.iter() {
+        for (i, ids) in boundary_path_ids.iter().enumerate() {
+            for &id in ids.iter() {
                 reverse_index[id].push(i);
             }
         }
         reverse_index
     };
-    let mut boundary_paths: Vec<_> = boundary_paths.iter().map(|x| x.len()).collect();
-    reads_to_be_used.sort_by_key(|x| x.1.len());
+    let mut boundary_path_number: Vec<_> = boundary_path_ids.iter().map(|x| x.len()).collect();
     loop {
-        let (idx, &max) = boundary_paths
+        let (idx, &max) = boundary_path_number
             .iter()
             .enumerate()
             .max_by_key(|x| x.1)
@@ -176,25 +166,22 @@ fn downsampling_up_to<'a>(
         if max <= max_occ {
             break;
         }
-        let (removed_path_id, removed_path) =
-            {
-                let rm_id = reads_to_be_used.iter().zip(reverse_index.iter()).position(
-                    |((_, path), bs)| {
-                        let on_max_boundary = bs.contains(&idx);
-                        let ok_to_remove = path.windows(2).all(|w| {
-                            let (f, t) = ((w[0].0).min(w[1].0), (w[0].0).max(w[0].1));
-                            *edge_counts.get(&(f, t)).unwrap() > 0
-                        });
-                        on_max_boundary && ok_to_remove
-                    },
-                );
-                match rm_id {
-                    Some(idx) => reads_to_be_used.remove(idx),
-                    None => break,
-                }
-            };
+        let (removed_path_id, removed_path) = {
+            let rm_id = reads_to_be_used.iter().position(|&(id, path)| {
+                let on_max_boundary = reverse_index[id].contains(&idx);
+                let ok_to_remove = path.windows(2).all(|w| {
+                    let (f, t) = ((w[0].0).min(w[1].0), (w[0].0).max(w[0].1));
+                    *edge_counts.get(&(f, t)).unwrap() > 0
+                });
+                on_max_boundary && ok_to_remove
+            });
+            match rm_id {
+                Some(idx) => reads_to_be_used.remove(idx),
+                None => break,
+            }
+        };
         for &b in reverse_index[removed_path_id].iter() {
-            boundary_paths[b] -= 1;
+            boundary_path_number[b] -= 1;
         }
         for w in removed_path.windows(2) {
             let (f, t) = ((w[0].0).min(w[1].0), (w[0].0).max(w[0].1));
@@ -227,16 +214,16 @@ fn get_boundary_nodes_on(order: &[usize], paths: &[(usize, &[(usize, usize)])]) 
 
 // Take P={p_1,..,p_n}, V={v_1, ...,v_m}, i, and edges E, then
 // let U = {v_1,..., v_i} and return
-// D(U) = {u \in U | there is some node w not in U such that (w,u) \in E,
-//                   there is some path such that it contains path from v_{i+1} <-> u}
+// D(U) = {u \in U | there is some node w not in U such that (w,u) \in E }
+//                 Depricated:  there is some path such that it contains path from v_{i+1} <-> u}
 fn get_boundary_nodes(
-    paths: &[(usize, &[(usize, usize)])],
+    _paths: &[(usize, &[(usize, usize)])],
     order: &[usize],
     iteration: usize,
     edges: &HashSet<(usize, usize)>,
 ) -> Nodes {
     assert!(iteration + 1 < order.len());
-    let next_node = iteration + 1;
+    // let next_node = order[iteration + 1];
     let nodes: HashSet<_> = order
         .iter()
         .take(iteration + 1)
@@ -245,12 +232,12 @@ fn get_boundary_nodes(
                 .iter()
                 .skip(iteration + 1)
                 .any(|&m| edges.contains(&(node, m)) || edges.contains(&(m, node)));
-            let reach_to_next_node = paths.iter().any(|(_, path)| {
-                let contain_node = path.iter().any(|&(n, _)| n == node);
-                let contain_next = path.iter().any(|&(n, _)| n == next_node);
-                contain_node && contain_next
-            });
-            is_connected_to_outer && reach_to_next_node
+            // let reach_to_next_node = paths.iter().any(|(_, path)| {
+            //     let contain_node = path.iter().any(|&(n, _)| n == node);
+            //     let contain_next = path.iter().any(|&(n, _)| n == next_node);
+            //     contain_node && contain_next
+            // });
+            is_connected_to_outer //  && reach_to_next_node
         })
         .copied()
         .collect();
@@ -260,8 +247,9 @@ fn get_boundary_nodes(
 fn get_paths_on(paths: &[(usize, &[(usize, usize)])], nodes: &Nodes) -> PathSet {
     let paths: Vec<_> = paths
         .iter()
-        .filter(|(_, path)| path.iter().any(|(n, _)| nodes.contains(n)))
-        .map(|&(id, _)| id)
+        .enumerate()
+        .filter(|(_, (_, path))| path.iter().any(|(n, _)| nodes.contains(n)))
+        .map(|(index, _)| index)
         .collect();
     PathSet::new(paths)
 }
@@ -277,6 +265,18 @@ fn exact_phase(
 ) -> Vec<(usize, u8)> {
     // Strip ids from paths.
     debug!("Begin");
+    for (idx, (id, p)) in paths.iter().enumerate() {
+        debug!("Path:{}\t{}\t{:?}", idx, id, p);
+    }
+    for (i, (((br, bn), nr), on)) in boundary_paths
+        .iter()
+        .zip(boundary_nodes.iter())
+        .zip(node_paths.iter())
+        .zip(order.iter())
+        .enumerate()
+    {
+        debug!("{}\t{:?}\t{:?}\t{:?}\t{}", i, br, bn, nr, on);
+    }
     // calculate each bipartition on each nodes.
     let ls_node: Vec<Vec<_>> = order
         .iter()
@@ -285,11 +285,11 @@ fn exact_phase(
         .collect();
     assert!(ls_node.iter().all(|xs| xs.iter().all(|&x| x < 0.000001)));
     debug!("{:?}", order);
-    // debug!("DUMP\tORDERE\tNODE\tLK");
-    // for (i, (v, xs)) in ordered_nodes.iter().zip(ls_node.iter()).enumerate() {
-    //     let xs: Vec<_> = xs.iter().map(|x| format!("{:.2}", x)).collect();
-    //     debug!("DUMP\t{}\t{}\t[{}]", i, v, xs.join(","));
-    // }
+    debug!("DUMP\tORDERE\tNODE\tLK");
+    for (i, (v, xs)) in order.iter().zip(ls_node.iter()).enumerate() {
+        let xs: Vec<_> = xs.iter().map(|x| format!("{:.2}", x)).collect();
+        debug!("DUMP\t{}\t{}\t[{}]", i, v, xs.join(","));
+    }
     // Calculate scores of each bipartition of the reads
     // Occured both in R(v_i) and R(D_{i-1}).
     // `arg` return the maximum partition of *R(v_i)*.
@@ -316,109 +316,50 @@ fn exact_phase(
             }
         })
         .unzip();
-    // debug!("ARGMAX\tORDER\tNODE\tLKS");
-    // for (i, (star, arg)) in ls_node_star.iter().zip(ls_node_star_arg.iter()).enumerate() {
-    //     if !boundary_nodes[i].contains(ordered_nodes[i]) {
-    //         let star: Vec<_> = star
-    //             .iter()
-    //             .zip(arg)
-    //             .map(|(lk, arg)| format!("{:.2}-{:b}", lk, arg))
-    //             .collect();
-    //         debug!("ARGMAX\t{}\t{:?}\t{}", i, ordered_nodes[i], star.join(","));
-    //     }
-    // }
-    let (mut ls, mut ls_hat, mut ls_hat_arg) = {
-        // Fill hat{Ls}[0]
-        // Intersection pattern of R(D_0)) => R(D_0) and R(D_1)
+
+    let (mut ls, mut ls_hat, mut ls_hat_arg) = (ls_node[0].clone(), vec![], vec![]);
+    for i in 1..num_of_nodes {
+        debug!("Summarizing {}-th node", i - 1);
         let convert_pattern_boundary =
-            boundary_paths[0].get_intersection_pattern(&boundary_paths[1]);
-        // Intersection pattern of R(D_0)) => R(D_0) and R(v_1)
-        let convert_pattern_node = boundary_paths[0].get_intersection_pattern(&node_paths[1]);
-        let intersection_size = boundary_paths[0].count_intersection(&boundary_paths[1]) as u32;
-        let mut ls_hat = vec![std::f64::NEG_INFINITY; 2usize.pow(intersection_size)];
-        let mut ls_hat_arg = vec![0; 2usize.pow(intersection_size)];
-        let ls = ls_node[0].clone();
-        for partition in 0..2usize.pow(boundary_paths[0].len() as u32) {
+            boundary_paths[i - 1].get_intersection_pattern(&boundary_paths[i]);
+        let convert_pattern_node = boundary_paths[i - 1].get_intersection_pattern(&node_paths[i]);
+        let intersection_size = boundary_paths[i - 1].count_intersection(&boundary_paths[i]) as u32;
+        ls_hat.clear();
+        ls_hat
+            .extend(std::iter::repeat(std::f64::NEG_INFINITY).take(2usize.pow(intersection_size)));
+        let mut ls_hat_i_arg = vec![0; 2usize.pow(intersection_size)];
+        for partition in 0..2usize.pow(boundary_paths[i - 1].len() as u32) {
             let pattern = convert_pattern_boundary.convert(partition);
-            let update = if boundary_nodes[1].contains(&order[1]) {
+            let update = if boundary_nodes[i].contains(&order[i]) {
                 ls[partition]
             } else {
-                ls[partition] + ls_node_star[1][convert_pattern_node.convert(partition)]
+                let node_pattern = convert_pattern_node.convert(partition);
+                ls[partition] + ls_node_star[i][node_pattern]
             };
             if ls_hat[pattern] < update {
-                ls_hat_arg[pattern] = partition;
                 ls_hat[pattern] = update;
+                ls_hat_i_arg[pattern] = partition;
             }
         }
-        // (vec![ls], vec![ls_hat], vec![ls_hat_arg])
-        (ls, ls_hat, vec![ls_hat_arg])
-    };
-    // This is for the next node, node 1.
-    for i in 1..num_of_nodes {
+        ls_hat_arg.push(ls_hat_i_arg);
         debug!("partitioning {}-th node", i);
         let convert_pattern_node = boundary_paths[i].get_intersection_pattern(&node_paths[i]);
         let convert_pattern_boundary =
             boundary_paths[i].get_intersection_pattern(&boundary_paths[i - 1]);
-        // let mut ls_i = vec![0.; 2usize.pow(boundary_reads[i].len() as u32)];
         ls.clear();
         ls.extend(std::iter::repeat(0.).take(2usize.pow(boundary_paths[i].len() as u32)));
         for partition in 0..2usize.pow(boundary_paths[i].len() as u32) {
             let converted_partition = convert_pattern_boundary.convert(partition);
-            // ls_i[partition]
             ls[partition] = if boundary_nodes[i].contains(&order[i]) {
-                //ls_hat[i - 1][converted_partition]
                 ls_hat[converted_partition] + ls_node[i][convert_pattern_node.convert(partition)]
             } else {
-                // ls_hat[i - 1][converted_partition]
                 ls_hat[converted_partition]
             };
         }
-        // ls.push(ls_i);
-        // Update for the next iteration.
-        if i + 1 < num_of_nodes {
-            let convert_pattern_boundary =
-                boundary_paths[i].get_intersection_pattern(&boundary_paths[i + 1]);
-            let convert_pattern_node =
-                boundary_paths[i].get_intersection_pattern(&node_paths[i + 1]);
-            let intersection_size =
-                boundary_paths[i].count_intersection(&boundary_paths[i + 1]) as u32;
-            // let mut ls_hat_i = vec![std::f64::NEG_INFINITY; 2usize.pow(intersection_size)];
-            ls_hat.clear();
-            ls_hat.extend(
-                std::iter::repeat(std::f64::NEG_INFINITY).take(2usize.pow(intersection_size)),
-            );
-            let mut ls_hat_i_arg = vec![0; 2usize.pow(intersection_size)];
-            for partition in 0..2usize.pow(boundary_paths[i].len() as u32) {
-                let pattern = convert_pattern_boundary.convert(partition);
-                let update = if boundary_nodes[i + 1].contains(&order[i + 1]) {
-                    // ls[i][partition]
-                    ls[partition]
-                } else {
-                    let node_pattern = convert_pattern_node.convert(partition);
-                    // ls[i][partition] + ls_node_star[i + 1][node_pattern]
-                    ls[partition] + ls_node_star[i + 1][node_pattern]
-                };
-                // if ls_hat_i[pattern] < update {
-                //     ls_hat_i[pattern] = update;
-                //     ls_hat_i_arg[pattern] = partition;
-                // }
-                if ls_hat[pattern] < update {
-                    ls_hat[pattern] = update;
-                    ls_hat_i_arg[pattern] = partition;
-                }
-            }
-            // ls_hat.push(ls_hat_i);
-            ls_hat_arg.push(ls_hat_i_arg);
-        }
     }
     // Traceback.
-    // assert_eq!(ls.last().unwrap().len(), 1);
     assert_eq!(ls.len(), 1);
     assert_eq!(ls_hat.len(), 1);
-    // assert_eq!(ls_hat.last().unwrap().len(), 1);
-    // assert_eq!(ls_hat.len(), num_of_nodes - 1);
-    // This score is given by ls_hat[num_of_nodes-2].
-    // debug!("Max LK is {:?}", ls.last().unwrap());
     debug!("Max LK is {:?}", ls);
     let (mut hap1, mut hap2) = (HashSet::new(), HashSet::new());
     // partition of 0 is the unique partition for the empty set, ((),()).
@@ -430,9 +371,10 @@ fn exact_phase(
             .get_intersection_pattern(&boundary_paths[current_index - 1]);
         let prev_argmax = ls_hat_arg[current_index - 1][converter.convert(current_partition)];
         debug!(
-            "Best R(D_{}) partition = {:b}",
+            "Best R(D_{}) = [{:?}] partition = {:b}",
             current_index - 1,
-            prev_argmax
+            boundary_paths[current_index - 1],
+            prev_argmax,
         );
         // Decompose this partition.
         for (i, &r) in boundary_paths[current_index - 1].iter().enumerate() {
@@ -530,6 +472,7 @@ fn xlnx(x: u32) -> f64 {
 #[derive(Clone, Default, PartialEq, Eq)]
 struct PathSet {
     // The index of the path.
+    // NOT THE ID OF THE PATH
     paths: Vec<usize>,
 }
 
@@ -722,8 +665,8 @@ pub mod test {
             vec![6, 0, 7, 9],    // 2
             vec![8, 9, 7, 0],    // 3
             vec![1, 2, 4, 5],    // 4
-            vec![4, 5, 6, 9, 8], // 5
-            vec![6, 5, 4, 2, 1], // 6
+            vec![4, 5, 3, 9, 8], // 5
+            vec![3, 5, 4, 2, 1], // 6
         ]
         .into_iter()
         .map(|ps| ps.into_iter().map(|x| (x, 0)).collect())
@@ -731,40 +674,44 @@ pub mod test {
         let paths: Vec<_> = paths.iter().map(|x| x.as_slice()).enumerate().collect();
         let order = vec![1, 2, 4, 6, 5, 0, 3, 7, 9, 8];
         let mut edges: HashSet<(usize, usize)> = HashSet::new();
-        edges.insert((1, 2));
-        edges.insert((2, 6));
-        edges.insert((6, 0));
-        edges.insert((0, 7));
-        edges.insert((7, 9));
-        edges.insert((9, 8));
-        edges.insert((8, 9));
-        edges.insert((9, 6));
-        edges.insert((6, 5));
-        edges.insert((5, 4));
-        edges.insert((4, 2));
-        edges.insert((2, 1));
+        for (_, ps) in paths.iter() {
+            for w in ps.windows(2) {
+                edges.insert((w[0].0, w[1].0));
+            }
+        }
         assert_eq!(
             get_boundary_nodes(&paths, &order, 0, &edges),
             Nodes::new(&vec![1])
         );
         assert_eq!(
             get_boundary_nodes(&paths, &order, 4, &edges),
-            Nodes::new(&vec![6])
+            Nodes::new(&vec![6, 5])
         );
         assert_eq!(
             get_boundary_nodes(&paths, &order, 7, &edges),
-            Nodes::new(&vec![6, 7])
+            Nodes::new(&vec![3, 7])
         );
         let nodes = get_boundary_nodes(&paths, &order, 0, &edges);
-        assert_eq!(get_paths_on(&paths, &nodes), PathSet::new(vec![0, 4]));
+        assert_eq!(get_paths_on(&paths, &nodes), PathSet::new(vec![0, 4, 6]));
         let nodes = get_boundary_nodes(&paths, &order, 3, &edges);
-        assert_eq!(get_paths_on(&paths, &nodes), PathSet::new(vec![4, 5, 6]));
+        assert_eq!(nodes, Nodes::new(&vec![4, 6]));
+        assert_eq!(
+            get_paths_on(&paths, &nodes),
+            PathSet::new(vec![0, 1, 2, 4, 5, 6])
+        );
         let nodes = get_boundary_nodes(&paths, &order, 6, &edges);
-        assert_eq!(get_paths_on(&paths, &nodes), PathSet::new(vec![0, 1, 2, 3]));
+        assert_eq!(
+            get_paths_on(&paths, &nodes),
+            PathSet::new(vec![0, 1, 2, 3, 5, 6])
+        );
         let nodes = get_boundary_nodes(&paths, &order, 8, &edges);
         assert_eq!(get_paths_on(&paths, &nodes), PathSet::new(vec![2, 3, 5]));
         let nodes = get_boundary_nodes(&paths, &order, 2, &edges);
-        assert_eq!(get_paths_on(&paths, &nodes), PathSet::new(vec![0, 1, 4, 6]));
+        assert_eq!(nodes, Nodes::new(&vec![2, 4]));
+        assert_eq!(
+            get_paths_on(&paths, &nodes),
+            PathSet::new(vec![0, 1, 4, 5, 6])
+        );
     }
     #[test]
     fn convet_test() {}

@@ -116,7 +116,7 @@ fn test(
             (id, path)
         })
         .collect();
-    let result = path_phasing::phase(&reads, 15, 24);
+    let result = path_phasing::phase(&reads, 15);
     let hap1 = result.get(&"0");
     let hap2_id = format!("{}", read_num - 1);
     let hap2 = result.get(hap2_id.as_str());
