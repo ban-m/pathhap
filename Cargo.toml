@@ -14,3 +14,4 @@ env_logger = "*"
 rayon = "*"
 rand = "*"
 rand_xoshiro = "*"
+graycode = {path = "gray_code"}

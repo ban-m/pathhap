@@ -1,0 +1,3 @@
+[submodule "gray_code"]
+	path = gray_code
+	url = git@github.com:ban-m/gray_code.git

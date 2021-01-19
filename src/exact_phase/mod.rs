@@ -215,7 +215,6 @@ fn get_boundary_nodes_on(order: &[usize], paths: &[(usize, &[(usize, usize)])]) 
 // Take P={p_1,..,p_n}, V={v_1, ...,v_m}, i, and edges E, then
 // let U = {v_1,..., v_i} and return
 // D(U) = {u \in U | there is some node w not in U such that (w,u) \in E }
-//                 Depricated:  there is some path such that it contains path from v_{i+1} <-> u}
 fn get_boundary_nodes(
     _paths: &[(usize, &[(usize, usize)])],
     order: &[usize],
