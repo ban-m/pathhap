@@ -117,10 +117,7 @@ fn test(
             let pred = result.get(id.as_str());
             let answer = if 2 * i / read_num == 0 { hap1 } else { hap2 };
             match answer != pred {
-                true => {
-                    // eprintln!("{:?}\t{:?}\t{}", hap1, pred, i);
-                    true
-                }
+                true => true,
                 x => x,
             }
         })
@@ -146,7 +143,7 @@ fn sim_read<R: Rng>(
         .take(length)
         .map(|&(n, c)| {
             if rng.gen_bool(error_rate) {
-                (n, rng.gen::<u64>() % unit_counts[&n])
+                (n, rng.gen::<u64>() % (unit_counts[&n] + 1))
             } else {
                 (n, c)
             }
