@@ -30,13 +30,13 @@ fn graphhap_smallscale() {
 fn graphhap_2() {
     // Parameters.
     let template_length = 100;
-    let duplication_rate = 0.0;
-    let hap_dup_rate = 0.000;
-    let hap_ins_rate = 0.000;
-    let hap_del_rate = 0.000;
+    let duplication_rate = 0.01;
+    let hap_dup_rate = 0.01;
+    let hap_ins_rate = 0.01;
+    let hap_del_rate = 0.01;
     let read_num = 1000;
-    let min_length = 3;
-    let max_length = 6;
+    let min_length = 5;
+    let max_length = 10;
     let error_rate = 0.0;
     test(
         template_length,
@@ -116,7 +116,7 @@ fn test(
             (id, path)
         })
         .collect();
-    let result = path_phasing::phase(&reads, 15);
+    let result = path_phasing::phase(&reads, 20);
     let hap1 = result.get(&"0");
     let hap2_id = format!("{}", read_num - 1);
     let hap2 = result.get(hap2_id.as_str());

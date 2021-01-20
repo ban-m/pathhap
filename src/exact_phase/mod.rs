@@ -461,23 +461,14 @@ fn exact_phase(
         let intersection_size = boundary_paths[i].count_intersection(&boundary_paths[i + 1]) as u32;
         let mut ls_hat_next = vec![std::f64::NEG_INFINITY; 2usize.pow(intersection_size)];
         let mut ls_hat_arg_next = vec![0; 2usize.pow(intersection_size)];
-        // let (mut partition, mut prev_pattern, mut next_pattern, mut node_pattern) = (0, 0, 0, 0);
-        // let graycode = GrayCodeFlip::new(boundary_paths[i].len() as u64);
         let (mut prev_pattern, mut next_pattern, mut node_pattern) = (0, 0, 0);
-        // for (t, flip_bit) in graycode.into_iter().enumerate() {
         for partition in 0..(1 << boundary_paths[i].len()) as usize {
-            //if t != 0 {
             if partition != 0 {
                 let flip_bit = (((partition - 1) ^ partition) as usize).trailing_ones();
                 prev_pattern = convert_pattern_current_to_prev.flip_from(prev_pattern, flip_bit);
                 next_pattern = convert_pattern_current_to_next.flip_from(next_pattern, flip_bit);
                 node_pattern = convert_pattern_current_to_node.flip_from(node_pattern, flip_bit);
-                // partition ^= 0b1 << flip_bit;
-                // prev_pattern = convert_pattern_current_to_prev.update(prev_pattern, flip_bit);
-                // next_pattern = convert_pattern_current_to_next.update(next_pattern, flip_bit);
-                // node_pattern = convert_pattern_current_to_node.update(node_pattern, flip_bit);
             }
-            assert!(boundary_nodes[i].contains(&order[i]));
             let update = ls_hat[prev_pattern] + ls_node[i][node_pattern];
             if ls_hat_next[next_pattern] < update {
                 ls_hat_next[next_pattern] = update;
@@ -494,22 +485,14 @@ fn exact_phase(
         let convert_pattern_current_to_node =
             boundary_paths[i].get_intersection_pattern(&node_paths[i]);
         let (mut prev_pattern, mut node_pattern) = (0, 0);
-        // let (mut partition, mut prev_pattern, mut node_pattern) = (0, 0, 0);
-        // GrayCodeFlip::new(boundary_paths[i].len() as u64)
         (0..(1 << boundary_paths[i].len() as u64) as usize)
-            // .into_iter()
-            // .enumerate()
             .map(|partition| {
-                //if t != 0 {
                 if partition != 0 {
                     let flip_bit = (((partition - 1) ^ partition) as usize).trailing_ones();
                     prev_pattern =
                         convert_pattern_current_to_prev.flip_from(prev_pattern, flip_bit);
                     node_pattern =
                         convert_pattern_current_to_node.flip_from(node_pattern, flip_bit);
-                    // partition ^= 0b1 << flip_bit;
-                    // prev_pattern = convert_pattern_current_to_prev.update(prev_pattern, flip_bit);
-                    // node_pattern = convert_pattern_current_to_node.update(node_pattern, flip_bit);
                 }
                 assert!(boundary_nodes[i].contains(&order[i]));
                 (partition, ls_hat[prev_pattern] + ls_node[i][node_pattern])
@@ -715,16 +698,17 @@ impl IntersectPattern {
             prev_pattern
         }
     }
-    #[allow(dead_code)]
+    #[inline]
     fn flip_from(&self, pattern: usize, flip_bit: u32) -> usize {
         let mut pattern = pattern;
-        for i in 0..flip_bit {
-            if ((self.pattern >> i) & 0b1) == 1 {
-                // This bit is relavant.
-                // The converted location is
+        if flip_bit == 1 {
+            pattern ^= self.pattern & 0b1;
+        } else {
+            for i in 0..flip_bit {
+                let probe = (self.pattern >> i) & 0b1;
                 let mask = (1 << i) - 1;
                 let location = (self.pattern & mask).count_ones();
-                pattern ^= 0b1 << location;
+                pattern ^= probe << location;
             }
         }
         pattern
