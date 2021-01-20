@@ -40,6 +40,7 @@ pub fn phase_cc(paths: &[Vec<(usize, usize)>], max_occ: usize) -> (Vec<u8>, f64)
         path_unused.len(),
         path_to_be_used.len()
     );
+    (0..num_of_nodes).for_each(|i| assert!(boundary_nodes[i].contains(&node_traverse_order[i])));
     let mut result = exact_phase(
         num_of_nodes,
         &path_to_be_used,
@@ -203,27 +204,20 @@ fn get_boundary_nodes_on(order: &[usize], paths: &[(usize, &[(usize, usize)])]) 
         edges
     };
     (0..order.len())
-        .map(|i| match i + 1 == order.len() {
-            true => Nodes {
-                nodes: HashSet::new(),
-            },
-            false => get_boundary_nodes(&paths, &order, i, &edges),
-        })
+        .map(|i| get_boundary_nodes(&paths, &order, i, &edges))
         .collect()
 }
 
 // Take P={p_1,..,p_n}, V={v_1, ...,v_m}, i, and edges E, then
 // let U = {v_1,..., v_i} and return
-// D(U) = {u \in U | there is some node w not in U such that (w,u) \in E }
+// D(U) = {v_i} + {u \in U | there is some node w not in U such that (w,u) \in E }
 fn get_boundary_nodes(
     _paths: &[(usize, &[(usize, usize)])],
     order: &[usize],
     iteration: usize,
     edges: &HashSet<(usize, usize)>,
 ) -> Nodes {
-    assert!(iteration + 1 < order.len());
-    // let next_node = order[iteration + 1];
-    let nodes: HashSet<_> = order
+    let mut nodes: HashSet<_> = order
         .iter()
         .take(iteration + 1)
         .filter(|&&node| {
@@ -231,15 +225,11 @@ fn get_boundary_nodes(
                 .iter()
                 .skip(iteration + 1)
                 .any(|&m| edges.contains(&(node, m)) || edges.contains(&(m, node)));
-            // let reach_to_next_node = paths.iter().any(|(_, path)| {
-            //     let contain_node = path.iter().any(|&(n, _)| n == node);
-            //     let contain_next = path.iter().any(|&(n, _)| n == next_node);
-            //     contain_node && contain_next
-            // });
-            is_connected_to_outer //  && reach_to_next_node
+            is_connected_to_outer
         })
         .copied()
         .collect();
+    nodes.insert(order[iteration]);
     Nodes { nodes }
 }
 
@@ -289,39 +279,11 @@ fn exact_phase(
         let xs: Vec<_> = xs.iter().map(|x| format!("{:.2}", x)).collect();
         debug!("DUMP\t{}\t{}\t[{}]", i, v, xs.join(","));
     }
-    // Calculate scores of each bipartition of the reads
-    // Occured both in R(v_i) and R(D_{i-1}).
-    // `arg` return the maximum partition of *R(v_i)*.
-    let (ls_node_star, ls_node_star_arg): (Vec<_>, Vec<_>) = (0..num_of_nodes)
-        .map(|i| match boundary_nodes[i].contains(&order[i]) {
-            true => (Vec::new(), Vec::new()),
-            false => {
-                assert!(i > 0);
-                let intersection_size =
-                    boundary_paths[i - 1].count_intersection(&node_paths[i]) as u32;
-                let mut ls_node_star_i =
-                    vec![std::f64::NEG_INFINITY; 2usize.pow(intersection_size)];
-                let mut ls_node_arg_i = vec![0; 2usize.pow(intersection_size)];
-                let intersection_pattern =
-                    node_paths[i].get_intersection_pattern(&boundary_paths[i - 1]);
-                for (read_pattern, &lk) in ls_node[i].iter().enumerate() {
-                    let pattern = intersection_pattern.convert(read_pattern);
-                    if ls_node_star_i[pattern] < lk {
-                        ls_node_star_i[pattern] = lk;
-                        ls_node_arg_i[pattern] = read_pattern;
-                    };
-                }
-                (ls_node_star_i, ls_node_arg_i)
-            }
-        })
-        .unzip();
-
     let (mut ls, mut ls_hat, mut ls_hat_arg) = (ls_node[0].clone(), vec![], vec![]);
     for i in 1..num_of_nodes {
         debug!("Summarizing {}-th node", i - 1);
         let convert_pattern_boundary =
             boundary_paths[i - 1].get_intersection_pattern(&boundary_paths[i]);
-        let convert_pattern_node = boundary_paths[i - 1].get_intersection_pattern(&node_paths[i]);
         let intersection_size = boundary_paths[i - 1].count_intersection(&boundary_paths[i]) as u32;
         ls_hat.clear();
         ls_hat
@@ -329,12 +291,8 @@ fn exact_phase(
         let mut ls_hat_i_arg = vec![0; 2usize.pow(intersection_size)];
         for partition in 0..2usize.pow(boundary_paths[i - 1].len() as u32) {
             let pattern = convert_pattern_boundary.convert(partition);
-            let update = if boundary_nodes[i].contains(&order[i]) {
-                ls[partition]
-            } else {
-                let node_pattern = convert_pattern_node.convert(partition);
-                ls[partition] + ls_node_star[i][node_pattern]
-            };
+            assert!(boundary_nodes[i].contains(&order[i]));
+            let update = ls[partition];
             if ls_hat[pattern] < update {
                 ls_hat[pattern] = update;
                 ls_hat_i_arg[pattern] = partition;
@@ -349,21 +307,27 @@ fn exact_phase(
         ls.extend(std::iter::repeat(0.).take(2usize.pow(boundary_paths[i].len() as u32)));
         for partition in 0..2usize.pow(boundary_paths[i].len() as u32) {
             let converted_partition = convert_pattern_boundary.convert(partition);
-            ls[partition] = if boundary_nodes[i].contains(&order[i]) {
-                ls_hat[converted_partition] + ls_node[i][convert_pattern_node.convert(partition)]
-            } else {
-                ls_hat[converted_partition]
-            };
+            ls[partition] =
+                ls_hat[converted_partition] + ls_node[i][convert_pattern_node.convert(partition)];
         }
     }
     // Traceback.
-    assert_eq!(ls.len(), 1);
-    assert_eq!(ls_hat.len(), 1);
-    debug!("Max LK is {:?}", ls);
+    let (argmax, ls_max) = ls
+        .iter()
+        .enumerate()
+        .max_by(|a, b| (a.1).partial_cmp(&b.1).unwrap())
+        .unwrap();
+    debug!("Max LK is {:?}, {:?}", ls_max, argmax);
     let (mut hap1, mut hap2) = (HashSet::new(), HashSet::new());
     // partition of 0 is the unique partition for the empty set, ((),()).
     // Current partition is the argmax patition for the R(D(`current_index`)).
-    let (mut current_index, mut current_partition) = (num_of_nodes - 1, 0);
+    let (mut current_index, mut current_partition) = (num_of_nodes - 1, argmax);
+    for (i, &r) in boundary_paths[current_index].iter().enumerate() {
+        match (current_partition >> i) & 1 == 0 {
+            true => hap1.insert(r),
+            false => hap2.insert(r),
+        };
+    }
     while 0 < current_index {
         // Let's get the bipartition of R(D_{current_index-1}).
         let converter = boundary_paths[current_index]
@@ -381,20 +345,6 @@ fn exact_phase(
                 true => hap1.insert(r),
                 false => hap2.insert(r),
             };
-        }
-        // Let's get the bipartition of R(v_current_index) if this vertex is not treated in the current_index-th iteration.
-        if !boundary_nodes[current_index].contains(&order[current_index]) {
-            // `prev_argmax` is a bipartition on R(D_{current_index-1}).
-            let converter = boundary_paths[current_index - 1]
-                .get_intersection_pattern(&node_paths[current_index]);
-            let partition_on_paths =
-                ls_node_star_arg[current_index][converter.convert(prev_argmax)];
-            for (i, &r) in node_paths[current_index].iter().enumerate() {
-                match (partition_on_paths >> i) & 1 == 0 {
-                    true => hap1.insert(r),
-                    false => hap2.insert(r),
-                };
-            }
         }
         current_partition = prev_argmax;
         current_index -= 1;
@@ -643,7 +593,7 @@ pub mod test {
         .map(|x| x.into_iter().collect())
         .collect();
         let orders = bfs(num_nodes, &edges);
-        eprintln!("Order:{:?}", orders);
+        // eprintln!("Order:{:?}", orders);
         let mut arrived_nodes: Vec<usize> = vec![];
         let mut count: HashMap<usize, u32> = (0..num_nodes).map(|x| (x, 0)).collect();
         for i in orders {

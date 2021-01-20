@@ -120,14 +120,6 @@ fn test(
     let hap1 = result.get(&"0");
     let hap2_id = format!("{}", read_num - 1);
     let hap2 = result.get(hap2_id.as_str());
-    // {
-    // let mut result: Vec<(u64, u8)> = result
-    //     .iter()
-    //     .map(|(id, &hap)| (id.parse().unwrap(), hap))
-    //     .collect();
-    // result.sort();
-    // eprintln!("{:?}", result);
-    // }
     let errors = reads
         .iter()
         .enumerate()
