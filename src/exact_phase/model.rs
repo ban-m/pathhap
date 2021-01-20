@@ -47,7 +47,17 @@ impl Model {
     pub fn predict_path(&self, path: &[(usize, usize)]) -> u8 {
         self.haps
             .iter()
-            .map(|hap| path.iter().map(|&(n, c)| hap[n][c].ln()).sum::<f64>())
+            .map(|hap| {
+                path.iter()
+                    .map(|&(n, c)| match hap.get(n) {
+                        Some(cls) => match cls.get(c) {
+                            Some(&x) => x.max(0.00000000001).ln(),
+                            None => 0.,
+                        },
+                        None => 0.,
+                    })
+                    .sum::<f64>()
+            })
             .enumerate()
             .map(|(x, y)| (x as u8, y))
             .max_by(|x, y| match x.1.partial_cmp(&(y.1)) {

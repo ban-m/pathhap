@@ -2,7 +2,7 @@
 // we can assume that the first read always belongs to the haplotype S.
 // TODO: We should not compute the T haplotype, as
 // all reads should be eigher S or T haplotype and we can reconstruct the haplotype S.
-use log::debug;
+use log::{debug, error};
 // use rayon::prelude::*;
 use std::collections::{HashMap, HashSet, VecDeque};
 mod model;
@@ -91,20 +91,144 @@ fn determine_traversal_order(num_of_nodes: usize, paths: &[Vec<(usize, usize)>])
             eds
         })
         .collect();
-    bfs(num_of_nodes, &edges)
+    traverse_graph(num_of_nodes, &edges)
+    //bfs(num_of_nodes, &edges)
 }
 
-// Breadth first search and returns the arriving order.
-fn bfs(num_of_nodes: usize, edges: &[Vec<usize>]) -> Vec<usize> {
-    let mut order = vec![];
-    let mut is_arrived = vec![false; num_of_nodes];
-    let mut queue = VecDeque::new();
-    let start_node = edges
+// Traverse graph so that the maximum number of the boundary would be as small as possible.
+// To this end, we first
+fn traverse_graph(num_of_nodes: usize, edges: &[Vec<usize>]) -> Vec<usize> {
+    let bridges: Vec<Vec<bool>> = enumerate_bridges(num_of_nodes, edges);
+    // DFS. Edge would be selected, first non-bridge edge with shortest return path,
+    // second any bridging edge.
+    let mut is_used = vec![false; num_of_nodes];
+    let mut stack = vec![get_start_node(num_of_nodes, edges)];
+    let mut order = stack.clone();
+    'dfs: while !stack.is_empty() {
+        let last = *stack.last().unwrap();
+        is_used[last] = true;
+        let next_non_bridge_node = edges[last]
+            .iter()
+            .zip(bridges[last].iter())
+            .filter(|&(&to, b)| !b && !is_used[to]) // non-bridge non-traversed.
+            .map(|(&to, _)| (to, min_return_time(&edges, &is_used, to, last)))
+            .min_by(|(x, x_ret), (y, y_ret)| match x_ret.cmp(y_ret) {
+                std::cmp::Ordering::Equal => x.cmp(y),
+                other => other,
+            });
+        if let Some((next, _)) = next_non_bridge_node {
+            order.push(next);
+            stack.push(next);
+            continue 'dfs;
+        }
+        let next_bridge_node = edges[last]
+            .iter()
+            .zip(bridges[last].iter())
+            .find(|&(&to, &b)| b && !is_used[to]); // bridge non-arived node
+        if let Some((&next, _)) = next_bridge_node {
+            stack.push(next);
+            order.push(next);
+            continue 'dfs;
+        }
+        stack.pop().unwrap();
+    }
+    // Sanity check.
+    let mut is_used = vec![false; num_of_nodes];
+    debug!("{:?}", order);
+    for &n in order.iter() {
+        assert!(!is_used[n]);
+        is_used[n] = true;
+    }
+    assert!(is_used.iter().all(|&b| b));
+    order
+}
+
+// starting from non-used node `start`, traverse the graph and return the distance from
+fn min_return_time(edges: &[Vec<usize>], is_used: &[bool], start: usize, parent: usize) -> u32 {
+    let mut is_arrived = is_used.to_vec();
+    let mut queue: Vec<_> = edges[start]
+        .iter()
+        .filter(|&&to| to != parent)
+        .copied()
+        .collect();
+    let mut distance = 0;
+    while !queue.is_empty() {
+        let mut next_queue = vec![];
+        for &to in queue.iter() {
+            if is_used[to] {
+                // Returned to the used node.
+                break;
+            } else if !is_arrived[to] {
+                is_arrived[to] = true;
+                next_queue.push(to);
+            }
+        }
+        queue = next_queue;
+        distance += 1;
+    }
+    distance
+}
+
+fn get_start_node(_: usize, edges: &[Vec<usize>]) -> usize {
+    edges
         .iter()
         .enumerate()
         .find(|(_, x)| x.len() == 1)
         .map(|x| x.0)
-        .unwrap_or(0);
+        .unwrap_or(0)
+}
+
+fn enumerate_bridges(num_of_nodes: usize, edges: &[Vec<usize>]) -> Vec<Vec<bool>> {
+    let mut is_used = vec![false; num_of_nodes];
+    let mut is_edge_used: Vec<_> = edges.iter().map(|x| vec![false; x.len()]).collect();
+    let mut stack = vec![0];
+    let mut order = vec![0; num_of_nodes];
+    let mut low_link = vec![0; num_of_nodes];
+    let mut iteration = 0;
+    let mut parent = vec![0; num_of_nodes];
+    'dfs: while !stack.is_empty() {
+        let last = *stack.last().unwrap();
+        is_used[last] = true;
+        for (i, &to) in edges[last].iter().enumerate() {
+            if !is_used[to] {
+                stack.push(to);
+                is_edge_used[last][i] = true;
+                iteration += 1;
+                order[to] = iteration;
+                parent[to] = last;
+                continue 'dfs;
+            }
+        }
+        let last = stack.pop().unwrap();
+        let ll = edges[last]
+            .iter()
+            .zip(is_edge_used[last].iter())
+            .filter(|&(&to, _)| to != parent[last])
+            .map(|(&to, &is_used)| if is_used { low_link[to] } else { order[to] })
+            .min();
+        low_link[last] = match ll {
+            Some(x) => x.min(order[last]),
+            None => order[last],
+        };
+    }
+    edges
+        .iter()
+        .enumerate()
+        .map(|(from, eds)| {
+            eds.iter()
+                .map(|&to| (order[from] < low_link[to]) | (order[to] < low_link[from]))
+                .collect::<Vec<_>>()
+        })
+        .collect::<Vec<_>>()
+}
+
+// Breadth first search and returns the arriving order.
+#[allow(dead_code)]
+fn bfs(num_of_nodes: usize, edges: &[Vec<usize>]) -> Vec<usize> {
+    let mut order = vec![];
+    let mut is_arrived = vec![false; num_of_nodes];
+    let mut queue = VecDeque::new();
+    let start_node = get_start_node(num_of_nodes, edges);
     queue.push_back(start_node);
     is_arrived[start_node] = true;
     while !queue.is_empty() {
@@ -130,23 +254,28 @@ fn downsampling_up_to<'a>(
     let mut reads_to_be_used: Vec<_> = paths.iter().map(|p| p.as_slice()).enumerate().collect();
     reads_to_be_used.sort_by_key(|x| x.1.len());
     let boundary_nodes = get_boundary_nodes_on(&order, &reads_to_be_used);
-    // ID, not the indices.
+    for (i, ns) in boundary_nodes.iter().enumerate() {
+        debug!("D\t{}\t{}", i, ns.len());
+    }
     let boundary_path_ids: Vec<Vec<usize>> = boundary_nodes
         .iter()
         .map(|bn| get_paths_on(&reads_to_be_used, bn))
         .map(|indices| indices.iter().map(|&i| reads_to_be_used[i].0).collect())
         .collect();
     let mut reads_unused = vec![];
-    let mut edge_counts: HashMap<(usize, usize), u32> = {
-        let mut count = HashMap::new();
-        for path in paths.iter() {
-            for w in path.windows(2) {
-                let (f, t) = ((w[0].0).min(w[1].0), (w[0].0).max(w[0].1));
-                *count.entry((f, t)).or_default() += 1;
-            }
+    let mut node_counts: HashMap<usize, u32> = HashMap::new();
+    for path in paths.iter() {
+        for &(n, _) in path {
+            *node_counts.entry(n).or_default() += 1;
         }
-        count
-    };
+    }
+    {
+        let mut node_counts: Vec<_> = node_counts.iter().collect();
+        node_counts.sort();
+        for (n, val) in node_counts {
+            debug!("BEFORE\t{}\t{}", n, val);
+        }
+    }
     // ReadID => Boundary ID.
     let reverse_index = {
         let mut reverse_index = vec![vec![]; reads_to_be_used.len()];
@@ -159,37 +288,64 @@ fn downsampling_up_to<'a>(
     };
     let mut boundary_path_number: Vec<_> = boundary_path_ids.iter().map(|x| x.len()).collect();
     loop {
-        let (idx, &max) = boundary_path_number
-            .iter()
-            .enumerate()
-            .max_by_key(|x| x.1)
-            .unwrap();
-        if max <= max_occ {
-            break;
-        }
-        let (removed_path_id, removed_path) = {
-            let rm_id = reads_to_be_used.iter().position(|&(id, path)| {
-                let on_max_boundary = reverse_index[id].contains(&idx);
-                let ok_to_remove = path.windows(2).all(|w| {
-                    let (f, t) = ((w[0].0).min(w[1].0), (w[0].0).max(w[0].1));
-                    *edge_counts.get(&(f, t)).unwrap() > 0
-                });
-                on_max_boundary && ok_to_remove
-            });
-            match rm_id {
-                Some(idx) => reads_to_be_used.remove(idx),
-                None => break,
-            }
+        let next_remove_probe = {
+            let mut excess_boundary: Vec<_> = boundary_path_number
+                .iter()
+                .enumerate()
+                .filter(|&(_, &occ)| occ > max_occ)
+                .collect();
+            excess_boundary.sort_by_key(|x| x.1);
+            // IS THIS...?
+            excess_boundary.reverse();
+            excess_boundary
+                .into_iter()
+                .filter_map(|(idx, _)| {
+                    let rm_id = reads_to_be_used
+                        .iter()
+                        .map(|&(id, path)| {
+                            let min_occ_along = path
+                                .iter()
+                                .filter_map(|&(n, _)| node_counts.get(&n))
+                                .min()
+                                .unwrap();
+                            let is_ok = reverse_index[id].contains(&idx);
+                            (min_occ_along, is_ok)
+                        })
+                        .enumerate()
+                        .filter(|&(_, (&min_occ, is_ok))| min_occ > 1 && is_ok)
+                        .max_by_key(|(_, x)| x.0)
+                        .map(|x| x.0);
+                    match rm_id {
+                        Some(idx) => Some(reads_to_be_used.remove(idx)),
+                        None => None,
+                    }
+                })
+                .next()
+        };
+        let (removed_path_id, removed_path) = match next_remove_probe {
+            Some(res) => res,
+            None => break,
         };
         for &b in reverse_index[removed_path_id].iter() {
             boundary_path_number[b] -= 1;
         }
-        for w in removed_path.windows(2) {
-            let (f, t) = ((w[0].0).min(w[1].0), (w[0].0).max(w[0].1));
-            *edge_counts.entry((f, t)).or_default() -= 1;
+        for (n, _) in removed_path.iter() {
+            *node_counts.get_mut(n).unwrap() -= 1;
         }
         reads_unused.push((removed_path_id, removed_path));
     }
+    // Dump metrics from here to....
+    {
+        for (i, n) in boundary_path_number.iter().enumerate() {
+            debug!("{}\t{}", i, n);
+        }
+        let mut node_counts: Vec<_> = node_counts.iter().collect();
+        node_counts.sort();
+        for (n, val) in node_counts {
+            debug!("AFTER\t{}\t{}", n, val);
+        }
+    }
+    // Here.
     (reads_to_be_used, reads_unused)
 }
 
@@ -273,12 +429,6 @@ fn exact_phase(
         .map(|(&node, paths_on_node)| enumerate_all_bipartition(&paths, paths_on_node, node))
         .collect();
     assert!(ls_node.iter().all(|xs| xs.iter().all(|&x| x < 0.000001)));
-    debug!("{:?}", order);
-    debug!("DUMP\tORDERE\tNODE\tLK");
-    for (i, (v, xs)) in order.iter().zip(ls_node.iter()).enumerate() {
-        let xs: Vec<_> = xs.iter().map(|x| format!("{:.2}", x)).collect();
-        debug!("DUMP\t{}\t{}\t[{}]", i, v, xs.join(","));
-    }
     let (mut ls_hat, mut ls_hat_arg) = {
         debug!("Summarizing 0-th node");
         let convert_pattern_boundary =
@@ -324,7 +474,7 @@ fn exact_phase(
     let (argmax, ls_max) = {
         let i = num_of_nodes - 1;
         let convert_pattern_current_to_prev =
-            boundary_paths[i - 1].get_intersection_pattern(&boundary_paths[i]);
+            boundary_paths[i].get_intersection_pattern(&boundary_paths[i - 1]);
         let convert_pattern_current_to_node =
             boundary_paths[i].get_intersection_pattern(&node_paths[i]);
         (0..2usize.pow(boundary_paths[i].len() as u32))
@@ -390,6 +540,15 @@ fn enumerate_all_bipartition(
     node: usize,
 ) -> Vec<f64> {
     let path_number = path_indices.len();
+    if paths
+        .iter()
+        .all(|(_, path)| path.iter().all(|&(n, _)| n != node))
+    {
+        for (_, p) in paths.iter() {
+            error!("{:?}", p);
+        }
+        panic!("Node {} never appears in the dataset.", node);
+    }
     let cluster_num = *paths
         .iter()
         .flat_map(|(_, path)| path.iter().filter(|&&(n, _)| n == node))
@@ -515,15 +674,7 @@ impl IntersectPattern {
             fat_pattern,
         }
     }
-    fn update(&self, prev_pattern: usize, flipped_bit: usize) -> usize {
-        if (self.pattern >> flipped_bit) & 0b1 == 1 {
-            // The flipped bit is in the converted path set.
-            // We need to flip the bit.
-            prev_pattern ^ (0b1 << flipped_bit)
-        } else {
-            prev_pattern
-        }
-    }
+
     fn convert(&self, pattern: usize) -> usize {
         assert!((pattern >> self.len).count_ones() == 0);
         let mut result = 0;
@@ -600,7 +751,63 @@ pub mod test {
         .map(|xs| xs.into_iter().map(|x| (x, 0)).collect())
         .collect();
         let order = determine_traversal_order(7, &paths);
-        assert_eq!(order, vec![1, 0, 3, 4, 5, 2, 6]);
+        assert!(order == vec![1, 0, 3, 4, 2, 5, 6]);
+    }
+    #[test]
+    fn bridge_test() {
+        let num_of_nodes = 4;
+        let edges = vec![vec![1], vec![0, 2, 3], vec![1], vec![1]];
+        let bridges = enumerate_bridges(num_of_nodes, &edges);
+        let answer = vec![vec![true], vec![true, true, true], vec![true], vec![true]];
+        assert_eq!(bridges, answer);
+    }
+    #[test]
+    fn bridge_test_2() {
+        let num_of_nodes = 6;
+        let edges = vec![
+            vec![1],
+            vec![0, 2, 3],
+            vec![1, 4],
+            vec![1, 4],
+            vec![2, 3, 5],
+            vec![4],
+        ];
+        let bridges = enumerate_bridges(num_of_nodes, &edges);
+        let answer = vec![
+            vec![true],
+            vec![true, false, false],
+            vec![false, false],
+            vec![false, false],
+            vec![false, false, true],
+            vec![true],
+        ];
+        assert_eq!(bridges, answer);
+    }
+    #[test]
+    fn bridge_test_3() {
+        let num_of_nodes = 8;
+        let edges = vec![
+            vec![1, 2],
+            vec![0, 5],
+            vec![0, 3, 4, 5],
+            vec![2, 4],
+            vec![2, 3],
+            vec![1, 2, 6, 7],
+            vec![5],
+            vec![5],
+        ];
+        let bridges = enumerate_bridges(num_of_nodes, &edges);
+        let answer = vec![
+            vec![false, false],
+            vec![false, false],
+            vec![false, false, false, false],
+            vec![false, false],
+            vec![false, false],
+            vec![false, false, true, true],
+            vec![true],
+            vec![true],
+        ];
+        assert_eq!(bridges, answer);
     }
     #[test]
     fn bfs_test() {
@@ -635,7 +842,6 @@ pub mod test {
         .map(|x| x.into_iter().collect())
         .collect();
         let orders = bfs(num_nodes, &edges);
-        // eprintln!("Order:{:?}", orders);
         let mut arrived_nodes: Vec<usize> = vec![];
         let mut count: HashMap<usize, u32> = (0..num_nodes).map(|x| (x, 0)).collect();
         for i in orders {

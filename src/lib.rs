@@ -395,6 +395,15 @@ mod test {
             .collect();
         paths.shuffle(&mut rng);
         let result = phase(&paths, 20);
+        {
+            let mut result: Vec<_> = result.iter().collect();
+            result.sort();
+            let mut paths = paths.clone();
+            paths.sort_by(|x, y| (x.0).cmp(&y.0));
+            for ((id, val), (_, p)) in result.iter().zip(paths.iter()) {
+                eprintln!("{}\t{}\t{:?}", id, val, p);
+            }
+        }
         let cluster1 = *result.get("0").unwrap();
         let cluster2: String = format!("{}", path_num - 1);
         let cluster2 = *result.get(cluster2.as_str()).unwrap();
