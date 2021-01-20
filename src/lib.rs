@@ -13,6 +13,7 @@ use std::collections::{HashMap, HashSet};
 pub mod em_progressive;
 mod exact_phase;
 mod find_union;
+use exact_phase::*;
 // use rand::SeedableRng;
 // use rand_xoshiro::Xoshiro128StarStar;
 /// Phasing API.
@@ -71,7 +72,38 @@ pub fn phase<'a>(paths: &'a [(String, Vec<(u64, u64)>)], max_occ: usize) -> Hash
         .map(|paths| {
             let normed_paths = normalize_path(paths);
             // normed_paths.shuffle(&mut rng);
-            let (phased_paths, lk) = exact_phase::phase_cc(&normed_paths, max_occ);
+            let (phased_paths, lk) = phase_cc(&normed_paths, max_occ);
+            debug!("Maximum likelihood:{:.3}", lk);
+            total_lk += lk;
+            phased_paths
+                .iter()
+                .zip(paths)
+                .map(|(&phase, (id, _))| (id.as_str(), phase))
+                .collect::<Vec<(&str, u8)>>()
+        })
+        .fold(HashMap::new(), |mut acc, y| {
+            acc.extend(y);
+            acc
+        });
+    debug!("Total log likelihood:{:.3}", total_lk);
+    phasing
+}
+
+pub fn haplotyping<'a>(
+    paths: &'a [(String, Vec<(u64, u64)>)],
+    max_length: usize,
+) -> HashMap<&'a str, u8> {
+    // First, decompose into each connected component.
+    // let mut rng: Xoshiro128StarStar = SeedableRng::seed_from_u64(seed);
+    // use rand::seq::SliceRandom;
+    let components = split_paths(paths);
+    debug!("NumOfCC\t{}", components.len());
+    let mut total_lk = 0.;
+    let phasing: HashMap<_, u8> = components
+        .iter()
+        .map(|paths| {
+            let normed_paths = normalize_path(paths);
+            let (phased_paths, lk) = haplotype_cc(&normed_paths, max_length);
             debug!("Maximum likelihood:{:.3}", lk);
             total_lk += lk;
             phased_paths

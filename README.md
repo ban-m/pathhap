@@ -17,7 +17,7 @@ RECORD = (ID)\t(NODE:CLUSTER\t)^+
 Here, ID is a string(,or integer) without tab character, and NODE and CLUSTER are integer.
 For example,
 
-RECORD = Test Read\t10:0\t11:0\t2341:13213\t343:324
+RECORD = TestRead  10:0    11:0    2341:13213  343:324
 
 As you can see, the number of node shouldn't be consective, so, feel easy. The graph containing all of reads would be created on the fly.
 
