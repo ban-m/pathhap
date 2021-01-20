@@ -296,7 +296,6 @@ fn exact_phase(
         }
         (ls_hat, vec![ls_hat_i_arg])
     };
-    // let (mut ls, mut ls_hat, mut ls_hat_arg) = (ls_node[0].clone(), vec![], vec![]);
     for i in 1..num_of_nodes - 1 {
         debug!("Computing \\hat{{L}}[{}] from previous \\hat{{L}}", i);
         let convert_pattern_current_to_prev =
@@ -322,36 +321,6 @@ fn exact_phase(
         ls_hat_arg.push(ls_hat_arg_next);
         ls_hat = ls_hat_next;
     }
-    // debug!("Summarizing {}-th node", i - 1);
-    // let convert_pattern_boundary =
-    //     boundary_paths[i - 1].get_intersection_pattern(&boundary_paths[i]);
-    // let intersection_size = boundary_paths[i - 1].count_intersection(&boundary_paths[i]) as u32;
-    // ls_hat.clear();
-    // ls_hat
-    //     .extend(std::iter::repeat(std::f64::NEG_INFINITY).take(2usize.pow(intersection_size)));
-    // let mut ls_hat_i_arg = vec![0; 2usize.pow(intersection_size)];
-    // for partition in 0..2usize.pow(boundary_paths[i - 1].len() as u32) {
-    //     let pattern = convert_pattern_boundary.convert(partition);
-    //     assert!(boundary_nodes[i].contains(&order[i]));
-    //     let update = ls[partition];
-    //     if ls_hat[pattern] < update {
-    //         ls_hat[pattern] = update;
-    //         ls_hat_i_arg[pattern] = partition;
-    //     }
-    // }
-    // ls_hat_arg.push(ls_hat_i_arg);
-    // debug!("partitioning {}-th node", i);
-    // let convert_pattern_node = boundary_paths[i].get_intersection_pattern(&node_paths[i]);
-    // let convert_pattern_boundary =
-    //     boundary_paths[i].get_intersection_pattern(&boundary_paths[i - 1]);
-    // ls.clear();
-    // ls.extend(std::iter::repeat(0.).take(2usize.pow(boundary_paths[i].len() as u32)));
-    // for partition in 0..2usize.pow(boundary_paths[i].len() as u32) {
-    //     let converted_partition = convert_pattern_boundary.convert(partition);
-    //     ls[partition] =
-    //         ls_hat[converted_partition] + ls_node[i][convert_pattern_node.convert(partition)];
-    // }
-    // }
     let (argmax, ls_max) = {
         let i = num_of_nodes - 1;
         let convert_pattern_current_to_prev =
@@ -521,18 +490,39 @@ impl PathSet {
 /// Bit Convert struct.
 /// It behaves like `mask-squash`. In other words, if this struct contains a bit pattern x,
 /// then, it convert n into m by picking every i-th bit having 1 in x.
-/// #Example
-/// ```rust
-/// let pattern = 0b10001;
 #[derive(Debug, Clone, Default)]
 pub struct IntersectPattern {
     len: usize,
     pattern: usize,
+    // If the i-th bit of `pattern` is 1,
+    // then, the i-th read is in the `fat_pattern[i]`-th bit in the
+    // converted pattern.
+    fat_pattern: Vec<usize>,
 }
 
 impl IntersectPattern {
     fn new(pattern: usize, len: usize) -> Self {
-        Self { pattern, len }
+        let (mut fat_pattern, mut pointer) = (vec![], 0);
+        for i in 0..len {
+            fat_pattern.push(pointer);
+            if ((pattern >> i) & 0b1) == 0b1 {
+                pointer += 1;
+            }
+        }
+        Self {
+            pattern,
+            len,
+            fat_pattern,
+        }
+    }
+    fn update(&self, prev_pattern: usize, flipped_bit: usize) -> usize {
+        if (self.pattern >> flipped_bit) & 0b1 == 1 {
+            // The flipped bit is in the converted path set.
+            // We need to flip the bit.
+            prev_pattern ^ (0b1 << flipped_bit)
+        } else {
+            prev_pattern
+        }
     }
     fn convert(&self, pattern: usize) -> usize {
         assert!((pattern >> self.len).count_ones() == 0);
