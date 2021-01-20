@@ -5,16 +5,16 @@ use std::collections::HashMap;
 fn main() {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("debug")).init();
     // Parameters.
-    let template_length = 100;
-    let duplication_rate = 0.0;
-    let hap_dup_rate = 0.000;
-    let hap_ins_rate = 0.000;
-    let hap_del_rate = 0.000;
+    let template_length = 200;
+    let duplication_rate = 0.01;
+    let hap_dup_rate = 0.001;
+    let hap_ins_rate = 0.001;
+    let hap_del_rate = 0.001;
     let read_num = 1000;
     let min_length = 3;
     let max_length = 6;
-    let error_rate = 0.0;
-    let iteration: u64 = 20;
+    let error_rate = 0.05;
+    let iteration: u64 = 10;
     let elapsed: Vec<_> = (0..iteration)
         .map(|seed| {
             let start = std::time::Instant::now();
