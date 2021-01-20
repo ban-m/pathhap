@@ -3,7 +3,7 @@ use rand::{Rng, SeedableRng};
 use rand_xoshiro::Xoroshiro128PlusPlus;
 use std::collections::HashMap;
 fn main() {
-    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("debug")).init();
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
     // Parameters.
     let template_length = 200;
     let duplication_rate = 0.01;
