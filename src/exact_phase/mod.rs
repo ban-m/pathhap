@@ -279,44 +279,96 @@ fn exact_phase(
         let xs: Vec<_> = xs.iter().map(|x| format!("{:.2}", x)).collect();
         debug!("DUMP\t{}\t{}\t[{}]", i, v, xs.join(","));
     }
-    let (mut ls, mut ls_hat, mut ls_hat_arg) = (ls_node[0].clone(), vec![], vec![]);
-    for i in 1..num_of_nodes {
-        debug!("Summarizing {}-th node", i - 1);
+    let (mut ls_hat, mut ls_hat_arg) = {
+        debug!("Summarizing 0-th node");
         let convert_pattern_boundary =
-            boundary_paths[i - 1].get_intersection_pattern(&boundary_paths[i]);
-        let intersection_size = boundary_paths[i - 1].count_intersection(&boundary_paths[i]) as u32;
-        ls_hat.clear();
-        ls_hat
-            .extend(std::iter::repeat(std::f64::NEG_INFINITY).take(2usize.pow(intersection_size)));
+            boundary_paths[0].get_intersection_pattern(&boundary_paths[1]);
+        let intersection_size = boundary_paths[0].count_intersection(&boundary_paths[1]) as u32;
+        let mut ls_hat = vec![std::f64::NEG_INFINITY; 2usize.pow(intersection_size)];
         let mut ls_hat_i_arg = vec![0; 2usize.pow(intersection_size)];
-        for partition in 0..2usize.pow(boundary_paths[i - 1].len() as u32) {
+        for partition in 0..2usize.pow(boundary_paths[0].len() as u32) {
             let pattern = convert_pattern_boundary.convert(partition);
-            assert!(boundary_nodes[i].contains(&order[i]));
-            let update = ls[partition];
+            let update = ls_node[0][partition];
             if ls_hat[pattern] < update {
                 ls_hat[pattern] = update;
                 ls_hat_i_arg[pattern] = partition;
             }
         }
-        ls_hat_arg.push(ls_hat_i_arg);
-        debug!("partitioning {}-th node", i);
-        let convert_pattern_node = boundary_paths[i].get_intersection_pattern(&node_paths[i]);
-        let convert_pattern_boundary =
+        (ls_hat, vec![ls_hat_i_arg])
+    };
+    // let (mut ls, mut ls_hat, mut ls_hat_arg) = (ls_node[0].clone(), vec![], vec![]);
+    for i in 1..num_of_nodes - 1 {
+        debug!("Computing \\hat{{L}}[{}] from previous \\hat{{L}}", i);
+        let convert_pattern_current_to_prev =
             boundary_paths[i].get_intersection_pattern(&boundary_paths[i - 1]);
-        ls.clear();
-        ls.extend(std::iter::repeat(0.).take(2usize.pow(boundary_paths[i].len() as u32)));
+        let convert_pattern_current_to_next =
+            boundary_paths[i].get_intersection_pattern(&boundary_paths[i + 1]);
+        let convert_pattern_current_to_node =
+            boundary_paths[i].get_intersection_pattern(&node_paths[i]);
+        let intersection_size = boundary_paths[i].count_intersection(&boundary_paths[i + 1]) as u32;
+        let mut ls_hat_next = vec![std::f64::NEG_INFINITY; 2usize.pow(intersection_size)];
+        let mut ls_hat_arg_next = vec![0; 2usize.pow(intersection_size)];
         for partition in 0..2usize.pow(boundary_paths[i].len() as u32) {
-            let converted_partition = convert_pattern_boundary.convert(partition);
-            ls[partition] =
-                ls_hat[converted_partition] + ls_node[i][convert_pattern_node.convert(partition)];
+            let prev_pattern = convert_pattern_current_to_prev.convert(partition);
+            let next_pattern = convert_pattern_current_to_next.convert(partition);
+            let node_pattern = convert_pattern_current_to_node.convert(partition);
+            assert!(boundary_nodes[i].contains(&order[i]));
+            let update = ls_hat[prev_pattern] + ls_node[i][node_pattern];
+            if ls_hat_next[next_pattern] < update {
+                ls_hat_next[next_pattern] = update;
+                ls_hat_arg_next[next_pattern] = partition;
+            }
         }
+        ls_hat_arg.push(ls_hat_arg_next);
+        ls_hat = ls_hat_next;
     }
+    // debug!("Summarizing {}-th node", i - 1);
+    // let convert_pattern_boundary =
+    //     boundary_paths[i - 1].get_intersection_pattern(&boundary_paths[i]);
+    // let intersection_size = boundary_paths[i - 1].count_intersection(&boundary_paths[i]) as u32;
+    // ls_hat.clear();
+    // ls_hat
+    //     .extend(std::iter::repeat(std::f64::NEG_INFINITY).take(2usize.pow(intersection_size)));
+    // let mut ls_hat_i_arg = vec![0; 2usize.pow(intersection_size)];
+    // for partition in 0..2usize.pow(boundary_paths[i - 1].len() as u32) {
+    //     let pattern = convert_pattern_boundary.convert(partition);
+    //     assert!(boundary_nodes[i].contains(&order[i]));
+    //     let update = ls[partition];
+    //     if ls_hat[pattern] < update {
+    //         ls_hat[pattern] = update;
+    //         ls_hat_i_arg[pattern] = partition;
+    //     }
+    // }
+    // ls_hat_arg.push(ls_hat_i_arg);
+    // debug!("partitioning {}-th node", i);
+    // let convert_pattern_node = boundary_paths[i].get_intersection_pattern(&node_paths[i]);
+    // let convert_pattern_boundary =
+    //     boundary_paths[i].get_intersection_pattern(&boundary_paths[i - 1]);
+    // ls.clear();
+    // ls.extend(std::iter::repeat(0.).take(2usize.pow(boundary_paths[i].len() as u32)));
+    // for partition in 0..2usize.pow(boundary_paths[i].len() as u32) {
+    //     let converted_partition = convert_pattern_boundary.convert(partition);
+    //     ls[partition] =
+    //         ls_hat[converted_partition] + ls_node[i][convert_pattern_node.convert(partition)];
+    // }
+    // }
+    let (argmax, ls_max) = {
+        let i = num_of_nodes - 1;
+        let convert_pattern_current_to_prev =
+            boundary_paths[i - 1].get_intersection_pattern(&boundary_paths[i]);
+        let convert_pattern_current_to_node =
+            boundary_paths[i].get_intersection_pattern(&node_paths[i]);
+        (0..2usize.pow(boundary_paths[i].len() as u32))
+            .map(|partition| {
+                let prev_pattern = convert_pattern_current_to_prev.convert(partition);
+                let node_pattern = convert_pattern_current_to_node.convert(partition);
+                assert!(boundary_nodes[i].contains(&order[i]));
+                (partition, ls_hat[prev_pattern] + ls_node[i][node_pattern])
+            })
+            .max_by(|a, b| (a.1).partial_cmp(&b.1).unwrap())
+            .unwrap()
+    };
     // Traceback.
-    let (argmax, ls_max) = ls
-        .iter()
-        .enumerate()
-        .max_by(|a, b| (a.1).partial_cmp(&b.1).unwrap())
-        .unwrap();
     debug!("Max LK is {:?}, {:?}", ls_max, argmax);
     let (mut hap1, mut hap2) = (HashSet::new(), HashSet::new());
     // partition of 0 is the unique partition for the empty set, ((),()).
