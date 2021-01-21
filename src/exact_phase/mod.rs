@@ -521,11 +521,11 @@ impl IntersectPattern {
 ///////////////////////////////////
 
 /// Haplotyping connected components.
-pub fn haplotype_cc(paths: &[Vec<(usize, usize)>], max_length: usize) -> (Vec<u8>, f64) {
+pub fn haplotype_cc(_paths: &[Vec<(usize, usize)>], _max_length: usize) -> (Vec<u8>, f64) {
     // Convert paths into paths with ID.
     debug!("Start");
-    let num_of_nodes = number_of_nodes(paths);
-    let node_traverse_order = determine_traversal_order(num_of_nodes, paths);
+    // let num_of_nodes = number_of_nodes(paths);
+    // let node_traverse_order = determine_traversal_order(num_of_nodes, paths);
     unimplemented!()
     // PSEUOD count 1.
     // let model = model::Model::new(&path_to_be_used, &result, 1);
