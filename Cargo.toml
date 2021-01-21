@@ -14,4 +14,4 @@ env_logger = "*"
 rayon = "*"
 rand = "*"
 rand_xoshiro = "*"
-graycode = {path = "gray_code"}
+graycode = {git = "https://github.com/ban-m/gray_code.git"}
