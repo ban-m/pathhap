@@ -13,9 +13,8 @@ use std::collections::{HashMap, HashSet};
 pub mod em_progressive;
 mod exact_phase;
 mod find_union;
-use exact_phase::*;
-// use rand::SeedableRng;
-// use rand_xoshiro::Xoshiro128StarStar;
+use exact_phase::haplotype_cc;
+use exact_phase::phase_cc;
 /// Phasing API.
 /// Phase given paths into two haplotypes.
 /// # Example
@@ -93,9 +92,6 @@ pub fn haplotyping<'a>(
     paths: &'a [(String, Vec<(u64, u64)>)],
     max_length: usize,
 ) -> HashMap<&'a str, u8> {
-    // First, decompose into each connected component.
-    // let mut rng: Xoshiro128StarStar = SeedableRng::seed_from_u64(seed);
-    // use rand::seq::SliceRandom;
     let components = split_paths(paths);
     debug!("NumOfCC\t{}", components.len());
     let mut total_lk = 0.;

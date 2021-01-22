@@ -1,5 +1,14 @@
 use log::debug;
 use std::collections::{HashSet, VecDeque};
+pub fn number_of_nodes(paths: &[Vec<(usize, usize)>]) -> usize {
+    paths
+        .iter()
+        .filter_map(|x| x.iter().map(|x| x.0).max())
+        .max()
+        .unwrap()
+        + 1
+}
+
 // BFS and return the order.
 // We choose the un-traversed smallest children at each step.
 pub fn determine_traversal_order(num_of_nodes: usize, paths: &[Vec<(usize, usize)>]) -> Vec<usize> {
