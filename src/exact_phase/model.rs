@@ -75,6 +75,8 @@ impl Model {
             .unwrap()
             .0
     }
+    /// Each path has unique ID, and haplotypes vector should has corresponding entry.
+    /// It is not needed to be consective, however.
     pub fn new(
         paths: &[(usize, &[(usize, usize)])],
         haplotypes: &[(usize, u8)],

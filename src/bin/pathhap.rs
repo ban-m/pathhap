@@ -40,6 +40,14 @@ fn main() -> std::io::Result<()> {
                     "Parameter. Max coverage for Phase module, max length of path for Hap module.",
                 ),
         )
+        .arg(
+            Arg::with_name("threads")
+                .long("threads")
+                .short("t")
+                .takes_value(true)
+                .default_value(&"1")
+                .help("Number of threds."),
+        )
         .get_matches();
     let level = match matches.occurrences_of("verbose") {
         0 => "warn",
@@ -60,6 +68,15 @@ fn main() -> std::io::Result<()> {
             w
         ),
     };
+    if let Some(threads) = matches.value_of("threads") {
+        match threads.parse::<usize>() {
+            Ok(res) => rayon::ThreadPoolBuilder::new()
+                .num_threads(res)
+                .build_global()
+                .unwrap(),
+            Err(why) => panic!("{:?}--mulformed threads number", why),
+        }
+    }
     let reuslt = path_phasing::phase(&paths, param);
     let mut result: Vec<_> = reuslt.into_iter().collect();
     result.sort_by_key(|x| x.1);
@@ -70,7 +87,8 @@ fn main() -> std::io::Result<()> {
     Ok(())
 }
 
-fn get_input_file(path: &str) -> std::io::Result<Vec<(String, Vec<(u64, u64)>)>> {
+type PathWithID = (String, Vec<(u64, u64)>);
+fn get_input_file(path: &str) -> std::io::Result<Vec<PathWithID>> {
     std::fs::File::open(path).map(BufReader::new).map(|rdr| {
         rdr.lines()
             .filter_map(|x| x.ok())
@@ -94,7 +112,7 @@ fn get_input_file(path: &str) -> std::io::Result<Vec<(String, Vec<(u64, u64)>)>>
                             },
                             None => panic!("Error. {} is too short.", unit),
                         };
-                        if let Some(_) = nc.next() {
+                        if nc.next().is_some() {
                             panic!("{} too long.", unit);
                         }
                         (node, cluster)

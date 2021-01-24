@@ -3,7 +3,6 @@ use super::graph_traversal::*;
 use super::model;
 use log::{debug, error};
 use std::collections::{HashMap, HashSet};
-
 // Phaing connected components.
 pub fn phase_cc(paths: &[Vec<(usize, usize)>], max_occ: usize) -> (Vec<u8>, f64) {
     // Convert paths into paths with ID.
@@ -16,7 +15,7 @@ pub fn phase_cc(paths: &[Vec<(usize, usize)>], max_occ: usize) -> (Vec<u8>, f64)
     let (path_to_be_used, path_unused) = downsampling_up_to(&node_traverse_order, paths, max_occ);
     let node_paths: Vec<_> = node_traverse_order
         .iter()
-        .map(|&n| get_paths_on(&path_to_be_used, &Nodes::new(&vec![n])))
+        .map(|&n| get_paths_on(&path_to_be_used, &Nodes::new(&[n])))
         .collect();
     let boundary_nodes: Vec<_> = get_boundary_nodes_on(&node_traverse_order, &path_to_be_used);
     let boundary_paths: Vec<_> = boundary_nodes
@@ -402,7 +401,7 @@ impl std::fmt::Debug for PathSet {
 
 impl PathSet {
     fn new(mut paths: Vec<usize>) -> Self {
-        paths.sort();
+        paths.sort_unstable();
         Self { paths }
     }
     fn iter(&self) -> std::slice::Iter<'_, usize> {

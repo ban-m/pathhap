@@ -172,7 +172,7 @@ impl Model {
         let nodes = units.clone();
         Self { hap1, hap2, nodes }
     }
-    fn weights(&self, path: &Vec<(usize, usize)>) -> Vec<f64> {
+    fn weights(&self, path: &[(usize, usize)]) -> Vec<f64> {
         let hap1_w = self.hap1_lk(path);
         let hap2_w = self.hap2_lk(path);
         let ln_sum = logsumexp(hap1_w, hap2_w);
@@ -199,8 +199,7 @@ impl Model {
     fn lk(&self, path: &[(usize, usize)]) -> f64 {
         let hap1_w = self.hap1_lk(path);
         let hap2_w = self.hap2_lk(path);
-        let lk = logsumexp(hap1_w, hap2_w);
-        lk
+        logsumexp(hap1_w, hap2_w)
     }
 }
 

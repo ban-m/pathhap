@@ -13,8 +13,8 @@ use std::collections::{HashMap, HashSet};
 pub mod em_progressive;
 mod exact_phase;
 mod find_union;
-use exact_phase::haplotype_cc;
-use exact_phase::phase_cc;
+pub use exact_phase::haplotype_cc;
+pub use exact_phase::phase_cc;
 /// Phasing API.
 /// Phase given paths into two haplotypes.
 /// # Example
@@ -59,7 +59,7 @@ use exact_phase::phase_cc;
 ///         ("ID4".to_string(), 1)
 ///     ]
 /// );
-pub fn phase<'a>(paths: &'a [(String, Vec<(u64, u64)>)], max_occ: usize) -> HashMap<&'a str, u8> {
+pub fn phase(paths: &[(String, Vec<(u64, u64)>)], max_occ: usize) -> HashMap<&str, u8> {
     // First, decompose into each connected component.
     // let mut rng: Xoshiro128StarStar = SeedableRng::seed_from_u64(seed);
     // use rand::seq::SliceRandom;
@@ -88,10 +88,7 @@ pub fn phase<'a>(paths: &'a [(String, Vec<(u64, u64)>)], max_occ: usize) -> Hash
     phasing
 }
 
-pub fn haplotyping<'a>(
-    paths: &'a [(String, Vec<(u64, u64)>)],
-    max_length: usize,
-) -> HashMap<&'a str, u8> {
+pub fn haplotyping(paths: &[(String, Vec<(u64, u64)>)], max_length: usize) -> HashMap<&str, u8> {
     let components = split_paths(paths);
     debug!("NumOfCC\t{}", components.len());
     let mut total_lk = 0.;
@@ -116,7 +113,8 @@ pub fn haplotyping<'a>(
     phasing
 }
 
-fn split_paths(paths: &[(String, Vec<(u64, u64)>)]) -> Vec<Vec<&(String, Vec<(u64, u64)>)>> {
+type PathWithID = (String, Vec<(u64, u64)>);
+fn split_paths(paths: &[PathWithID]) -> Vec<Vec<&PathWithID>> {
     let mut fu = find_union::FindUnion::new(paths.len());
     let path_sketch: Vec<HashSet<_>> = paths
         .iter()
@@ -156,7 +154,7 @@ fn normalize_path(paths: &[&(String, Vec<(u64, u64)>)]) -> Vec<Vec<(usize, usize
             .flat_map(|(_, p)| p.iter())
             .map(|x| x.0)
             .collect();
-        nodes.sort();
+        nodes.sort_unstable();
         nodes.dedup();
         nodes.into_iter().enumerate().map(|(i, x)| (x, i)).collect()
     };
@@ -168,7 +166,7 @@ fn normalize_path(paths: &[&(String, Vec<(u64, u64)>)]) -> Vec<Vec<(usize, usize
             }
         }
         cluster.iter_mut().for_each(|xs| {
-            xs.sort();
+            xs.sort_unstable();
             xs.dedup();
         });
         cluster
@@ -588,6 +586,104 @@ mod test {
             .collect();
         paths.shuffle(&mut rng);
         let result = phase(&paths, 20);
+        let cluster1 = *result.get("0").unwrap();
+        let cluster2: String = format!("{}", path_num - 1);
+        let cluster2 = *result.get(cluster2.as_str()).unwrap();
+        assert_ne!(cluster1, cluster2);
+        for i in 0..path_num {
+            let id: String = format!("{}", i);
+            if i < path_num / 2 {
+                assert_eq!(cluster1, result[id.as_str()]);
+            } else {
+                assert_eq!(cluster2, result[id.as_str()]);
+            }
+        }
+    }
+    #[test]
+    fn hap_test_random_hard() {
+        let mut rng: Xoshiro256PlusPlus = SeedableRng::seed_from_u64(34089);
+        let mut nodes = vec![];
+        for _ in 0..20 {
+            nodes.push(rng.gen::<u64>() % 100);
+        }
+        let template1: Vec<(u64, u64)> = {
+            let mut count: HashMap<_, u64> = HashMap::new();
+            let mut nodes: Vec<_> = nodes.iter().skip(3).copied().collect();
+            nodes.sort();
+            nodes
+                .iter()
+                .map(|&node| {
+                    let count = count.entry(node).or_default();
+                    *count += 1;
+                    (node, *count - 1)
+                })
+                .collect()
+        };
+        // eprintln!("{:?}", template1);
+        let template2: Vec<(u64, u64)> = {
+            let mut count: HashMap<_, u64> = HashMap::new();
+            let mut nodes: Vec<_> = nodes;
+            nodes.sort();
+            nodes
+                .iter()
+                .map(|&node| {
+                    let count = count.entry(node).or_insert(2);
+                    *count += 1;
+                    (node, *count - 1)
+                })
+                .collect()
+        };
+        // eprintln!("{:?}", template2);
+        let min_len = 3;
+        let max_len = 6;
+        let path_num = 10;
+        let mut paths: Vec<_> = (0..path_num)
+            .map(|i| {
+                let path = if i < path_num / 2 {
+                    sim_path(&template1, &mut rng, min_len, max_len)
+                } else {
+                    sim_path(&template2, &mut rng, min_len, max_len)
+                };
+                (format!("{}", i), path)
+            })
+            .collect();
+        paths.shuffle(&mut rng);
+        let result = haplotyping(&paths, 20);
+        let cluster1 = *result.get("0").unwrap();
+        let cluster2: String = format!("{}", path_num - 1);
+        let cluster2 = *result.get(cluster2.as_str()).unwrap();
+        assert_ne!(cluster1, cluster2);
+        for i in 0..path_num {
+            let id: String = format!("{}", i);
+            if i < path_num / 2 {
+                assert_eq!(cluster1, result[id.as_str()]);
+            } else {
+                assert_eq!(cluster2, result[id.as_str()]);
+            }
+        }
+    }
+    #[test]
+    fn hap_test_random_linear_error() {
+        let template1: Vec<_> = (0..10).map(|x| (x, 0)).collect();
+        let template2: Vec<_> = (0..10).map(|x| (x, 1)).collect();
+        let cluster_num: HashMap<u64, u64> = (0..10).map(|x| (x, 2)).collect();
+        let min_len = 3;
+        let max_len = 6;
+        let err = 0.1;
+        let path_num = 10;
+        let mut rng: Xoshiro256PlusPlus = SeedableRng::seed_from_u64(34089);
+        let mut paths: Vec<_> = (0..path_num)
+            .map(|i| {
+                let path = if i < path_num / 2 {
+                    sim_path_error(&template1, &cluster_num, &mut rng, min_len, max_len, err)
+                } else {
+                    sim_path_error(&template2, &cluster_num, &mut rng, min_len, max_len, err)
+                };
+                (format!("{}", i), path)
+            })
+            .collect();
+        paths.shuffle(&mut rng);
+        let result = haplotyping(&paths, 20);
         let cluster1 = *result.get("0").unwrap();
         let cluster2: String = format!("{}", path_num - 1);
         let cluster2 = *result.get(cluster2.as_str()).unwrap();

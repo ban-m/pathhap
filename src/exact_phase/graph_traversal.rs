@@ -24,7 +24,7 @@ pub fn determine_traversal_order(num_of_nodes: usize, paths: &[Vec<(usize, usize
         .into_iter()
         .map(|eds| {
             let mut eds: Vec<_> = eds.into_iter().collect();
-            eds.sort();
+            eds.sort_unstable();
             eds
         })
         .collect();
@@ -223,7 +223,7 @@ pub fn get_boundary_nodes(
 }
 #[derive(Debug, Clone, Default)]
 pub struct Nodes {
-    nodes: HashSet<usize>,
+    pub nodes: HashSet<usize>,
 }
 
 impl Nodes {
