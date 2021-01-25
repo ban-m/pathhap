@@ -1,4 +1,5 @@
 // use path_phasing::haplotype_cc;
+use log::debug;
 use rand::seq::SliceRandom;
 use rand::{Rng, SeedableRng};
 use rand_xoshiro::Xoshiro256PlusPlus;
@@ -57,8 +58,11 @@ fn main() {
             (format!("{}", i), path)
         })
         .collect();
+    for (i, p) in paths.iter() {
+        debug!("{}\t{:?}", i, p);
+    }
     paths.shuffle(&mut rng);
-    let result = path_phasing::haplotyping(&paths, 20);
+    let result = path_phasing::haplotyping(&paths, 20, 0.05);
     let cluster1 = *result.get("0").unwrap();
     let cluster2: String = format!("{}", path_num - 1);
     let cluster2 = *result.get(cluster2.as_str()).unwrap();

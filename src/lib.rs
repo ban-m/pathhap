@@ -88,7 +88,11 @@ pub fn phase(paths: &[(String, Vec<(u64, u64)>)], max_occ: usize) -> HashMap<&st
     phasing
 }
 
-pub fn haplotyping(paths: &[(String, Vec<(u64, u64)>)], max_length: usize) -> HashMap<&str, u8> {
+pub fn haplotyping(
+    paths: &[(String, Vec<(u64, u64)>)],
+    max_length: usize,
+    er: f64,
+) -> HashMap<&str, u8> {
     let components = split_paths(paths);
     debug!("NumOfCC\t{}", components.len());
     let mut total_lk = 0.;
@@ -96,7 +100,25 @@ pub fn haplotyping(paths: &[(String, Vec<(u64, u64)>)], max_length: usize) -> Ha
         .iter()
         .map(|paths| {
             let normed_paths = normalize_path(paths);
-            let (phased_paths, lk) = haplotype_cc(&normed_paths, max_length);
+            // Check error_rate is not too large.
+            {
+                let mut cluster_num: HashMap<_, usize> = HashMap::new();
+                for p in normed_paths.iter() {
+                    for &(n, c) in p.iter() {
+                        let cl = cluster_num.entry(n).or_default();
+                        *cl = (*cl).max(c + 1);
+                    }
+                }
+                for (n, c) in cluster_num {
+                    if 1f64 < c as f64 * er {
+                        error!("Error rate is too large.");
+                        error!("Some node(node {}) has {} clusters.", n, c);
+                        error!("Node {} is the {}-th smallest nodes in the dataset.", n, n);
+                        panic!("Panic from above error.");
+                    }
+                }
+            }
+            let (phased_paths, lk) = haplotype_cc(&normed_paths, max_length, er);
             debug!("Maximum likelihood:{:.3}", lk);
             total_lk += lk;
             phased_paths
@@ -648,7 +670,7 @@ mod test {
             })
             .collect();
         paths.shuffle(&mut rng);
-        let result = haplotyping(&paths, 20);
+        let result = haplotyping(&paths, 20, 0.05);
         let cluster1 = *result.get("0").unwrap();
         let cluster2: String = format!("{}", path_num - 1);
         let cluster2 = *result.get(cluster2.as_str()).unwrap();
@@ -683,7 +705,7 @@ mod test {
             })
             .collect();
         paths.shuffle(&mut rng);
-        let result = haplotyping(&paths, 20);
+        let result = haplotyping(&paths, 20, 0.05);
         let cluster1 = *result.get("0").unwrap();
         let cluster2: String = format!("{}", path_num - 1);
         let cluster2 = *result.get(cluster2.as_str()).unwrap();

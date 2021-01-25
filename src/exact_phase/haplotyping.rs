@@ -2,8 +2,8 @@ use super::graph_traversal::*;
 use super::model;
 use log::{debug, warn};
 use std::collections::{HashMap, HashSet};
-const ERROR_FRACTION: f64 = 0.00005;
-pub fn haplotype_cc(paths: &[Vec<(usize, usize)>], max_len: usize) -> (Vec<u8>, f64) {
+const ERROR_FRACTION: f64 = 0.05;
+pub fn haplotype_cc(paths: &[Vec<(usize, usize)>], max_len: usize, er: f64) -> (Vec<u8>, f64) {
     debug!("start.");
     let num_of_nodes = number_of_nodes(paths);
     let node_traverse_order = determine_traversal_order(num_of_nodes, paths);
@@ -16,6 +16,7 @@ pub fn haplotype_cc(paths: &[Vec<(usize, usize)>], max_len: usize) -> (Vec<u8>, 
         &prefetch_nodes,
         &beginning_paths,
         &split_paths,
+        er,
     );
     let model = model::Model::new(&split_paths, &result, 0);
     let result: Vec<_> = paths.iter().map(|path| model.predict_path(path)).collect();
@@ -49,6 +50,7 @@ fn haplotyping_exact(
     prefetch_nodes: &[SortedNodes],
     beginning_paths: &[Paths],
     paths: &[(usize, &[(usize, usize)])],
+    error_rate: f64,
 ) -> Vec<(usize, u8)> {
     debug!("PATH\tID\tPath");
     for (id, path) in paths.iter() {
@@ -56,7 +58,7 @@ fn haplotyping_exact(
     }
     // Calculate the number of cluster.
     let cluster_num = get_cluster_num(paths);
-    debug!("DUMP\tITER\tNODE\tPrefetches\tBeginPath");
+    debug!("DUMP\tITER\tNODE\tPrefetches\tLen\tBeginPath");
     for (i, ((node, bn), begpath)) in order
         .iter()
         .zip(prefetch_nodes.iter())
@@ -64,7 +66,7 @@ fn haplotyping_exact(
         .enumerate()
     {
         let len = bn.iter().map(|n| cluster_num[n]).sum::<usize>();
-        debug!("{}\t{}\t{:?}\t{}\t{:?}", i, node, bn, len, begpath);
+        debug!("\t{}\t{}\t{:?}\t{}\t{:?}", i, node, bn, len, begpath);
     }
 
     let paths: HashMap<usize, _> = paths.iter().copied().collect();
@@ -77,7 +79,7 @@ fn haplotyping_exact(
         .zip(beginning_paths.iter())
         .enumerate()
     {
-        debug!("{}\t{:?}\t{:?}", t, prefetches, begin_paths);
+        debug!("Start\t{}\t{:?}\t{:?}", t, prefetches, begin_paths);
         for p in begin_paths.iter() {
             debug!("{:?}", paths[p]);
         }
@@ -112,7 +114,10 @@ fn haplotyping_exact(
                 let prev_position = prev_converter.convert(haplotype).pos();
                 let current_score = prev_score[prev_position] + score_on_node;
                 let pos = haplotype.pos();
-                debug!("HAP\t{:b}\t{:b}\t{}", haplotype.0, pos, score_on_node);
+                debug!(
+                    "HAP\t{:b}\t{:b}\t{:.3}\t{:.3}",
+                    haplotype.0, pos, score_on_node, current_score
+                );
                 score[pos] = current_score;
                 argmax[t][pos] = haplotype;
             }
@@ -131,8 +136,8 @@ fn haplotyping_exact(
                 let current_score = prev_score[prev_position] + score_on_node;
                 let next_pos = next_converter.convert(haplotype).pos();
                 debug!(
-                    "HAP\t{:b}\t{:b}\t{:b}\t{}",
-                    haplotype.0, prev_position, next_pos, current_score
+                    "HAP\t{:b}\t{:b}\t{:b}\t{:.3}\t{:.3}",
+                    haplotype.0, prev_position, next_pos, score_on_node, current_score
                 );
                 if score[next_pos] < current_score {
                     score[next_pos] = current_score;
@@ -165,7 +170,7 @@ fn haplotyping_exact(
     let model = HapModel::new(&result, &cluster_num);
     paths
         .iter()
-        .map(|(&id, path)| (id, model.predict(path)))
+        .map(|(&id, path)| (id, model.predict(path, error_rate)))
         .collect()
 }
 
@@ -194,20 +199,20 @@ impl HapModel {
         }
         Self { is_in_hap1 }
     }
-    fn predict(&self, path: &[(usize, usize)]) -> u8 {
+    fn predict(&self, path: &[(usize, usize)], error_rate: f64) -> u8 {
         let (mut hap1, mut hap2) = (0f64, 0f64);
         for &(ref node, cluster) in path {
             if let Some(clusters) = self.is_in_hap1.get(node) {
                 let hap1_size = clusters.iter().filter(|&&x| x).count();
                 let hap2_size = clusters.len() - hap1_size;
                 if clusters[cluster] {
-                    let hap1score = (1f64 - ERROR_FRACTION * hap2_size as f64) / hap1_size as f64;
-                    let hap2score = ERROR_FRACTION;
+                    let hap1score = (1f64 - error_rate * hap2_size as f64) / hap1_size as f64;
+                    let hap2score = error_rate;
                     hap1 += hap1score.ln();
                     hap2 += hap2score.ln();
                 } else {
-                    let hap1score = ERROR_FRACTION;
-                    let hap2score = (1f64 - ERROR_FRACTION * hap1_size as f64) / hap2_size as f64;
+                    let hap1score = error_rate;
+                    let hap2score = (1f64 - error_rate * hap1_size as f64) / hap2_size as f64;
                     hap1 += hap1score.ln();
                     hap2 += hap2score.ln();
                 };
@@ -422,9 +427,10 @@ fn get_prefetch_nodes(
     let mut current_focus_nodes: HashSet<usize> = HashSet::new();
     let mut prefetched_nodes = vec![];
     for (&focal_node, begin_paths) in order.iter().zip(beginning_paths) {
-        let mut prefetch = get_prefetch_nodes_on(&begin_paths, &paths, &haplotyped_nodes);
-        prefetch.extend(current_focus_nodes.iter().copied());
-        prefetched_nodes.push(SortedNodes::new(prefetch.into_iter().collect::<Vec<_>>()));
+        let prefetch = get_prefetch_nodes_on(&begin_paths, &paths, &haplotyped_nodes);
+        current_focus_nodes.extend(prefetch);
+        let prefetch = SortedNodes::new(current_focus_nodes.iter().copied().collect::<Vec<_>>());
+        prefetched_nodes.push(prefetch);
         haplotyped_nodes.insert(focal_node);
         current_focus_nodes.remove(&focal_node);
     }
@@ -478,12 +484,7 @@ fn downsampling_up_to<'a>(
             }
         }
         // Register all the nodes into current_focus.
-        let new_nodes = begin_paths.iter().flat_map(|id| {
-            paths[id]
-                .iter()
-                .map(|x| x.0)
-                .filter(|n| !haplotyped_nodes.contains(n))
-        });
+        let new_nodes = get_prefetch_nodes_on(&begin_paths, &paths, &haplotyped_nodes);
         current_focus_nodes.extend(new_nodes);
         current_focus_nodes.remove(&focal_node);
         haplotyped_nodes.insert(focal_node);
@@ -835,7 +836,7 @@ mod tests {
             vec![(0, 1), (1, 1), (2, 1), (3, 1)],
             vec![(0, 1), (1, 1), (2, 1), (3, 1)],
         ];
-        let (result, _) = haplotype_cc(&paths, 14);
+        let (result, _) = haplotype_cc(&paths, 14, ERROR_FRACTION);
         eprintln!("{:?}", result);
         let is_ok = result == vec![0, 0, 1, 1] || result == vec![1, 1, 0, 0];
         assert!(is_ok, "{:?}", result);
@@ -848,7 +849,7 @@ mod tests {
         let path3 = vec![(0, 1), (1, 1), (2, 1), (3, 1), (2, 1), (4, 0)];
         let path4 = vec![(2, 1), (3, 1), (2, 1)];
         let paths = vec![path1, path2, path3, path4];
-        let (result, _) = haplotype_cc(&paths, 14);
+        let (result, _) = haplotype_cc(&paths, 14, ERROR_FRACTION);
         let is_ok = vec![0, 0, 1, 1] == result || vec![1, 1, 0, 0] == result;
         assert!(is_ok, "{:?}", result);
     }
@@ -891,7 +892,7 @@ mod tests {
             })
             .collect();
         // paths.shuffle(&mut rng);
-        let (result, _) = haplotype_cc(&paths, 20);
+        let (result, _) = haplotype_cc(&paths, 20, ERROR_FRACTION);
         let answer: Vec<_> = (0..path_num)
             .map(|i| match i < path_num / 2 {
                 true => 0,
@@ -950,7 +951,7 @@ mod tests {
             })
             .collect();
         // paths.shuffle(&mut rng);
-        let (result, _) = haplotype_cc(&paths, 20);
+        let (result, _) = haplotype_cc(&paths, 20, ERROR_FRACTION);
         let answer: Vec<_> = (0..path_num)
             .map(|i| match i < path_num / 2 {
                 true => 0,
@@ -1002,7 +1003,7 @@ mod tests {
                 }
             })
             .collect();
-        let (result, _) = haplotype_cc(&paths, 20);
+        let (result, _) = haplotype_cc(&paths, 20, ERROR_FRACTION);
         let answer: Vec<_> = (0..path_num)
             .map(|i| match i < path_num / 2 {
                 true => 0,
@@ -1059,7 +1060,7 @@ mod tests {
                 }
             })
             .collect();
-        let (result, _) = haplotype_cc(&paths, 20);
+        let (result, _) = haplotype_cc(&paths, 20, ERROR_FRACTION);
         let answer: Vec<_> = (0..path_num)
             .map(|i| match i < path_num / 2 {
                 true => 0,
