@@ -5,7 +5,7 @@ use std::collections::HashMap;
 fn main() {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
     // Parameters.
-    let template_length = 2000;
+    let template_length = 1000;
     let duplication_rate = 0.0001;
     let hap_dup_rate = 0.0001;
     let hap_ins_rate = 0.0001;
