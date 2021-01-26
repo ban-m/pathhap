@@ -4,7 +4,7 @@ use super::model;
 use log::{debug, error};
 use std::collections::{HashMap, HashSet};
 // Phaing connected components.
-pub fn phase_cc(paths: &[Vec<(usize, usize)>], max_occ: usize) -> (Vec<u8>, f64) {
+pub fn phase_cc(paths: &[Vec<(usize, usize)>], max_occ: usize) -> Vec<u8> {
     // Convert paths into paths with ID.
     debug!("Start");
     // Construct a graph.
@@ -36,8 +36,16 @@ pub fn phase_cc(paths: &[Vec<(usize, usize)>], max_occ: usize) -> (Vec<u8>, f64)
         &boundary_nodes,
         &boundary_paths,
     );
-    // PSEUOD count 1.
-    let model = model::Model::new(&path_to_be_used, &result, 1);
+    // {
+    //     let paths: HashMap<usize, _> = path_to_be_used.iter().copied().collect();
+    //     for (i, _) in result.iter().filter(|&&(_, hap)| hap == 0) {
+    //         eprintln!("0\t{:?}", paths[i])
+    //     }
+    //     for (i, _) in result.iter().filter(|&&(_, hap)| hap == 1) {
+    //         eprintln!("1\t{:?}", paths[i])
+    //     }
+    // }
+    let model = model::Model::new(&path_to_be_used, &result, 0.1);
     debug!("Finished");
     let mut paths_with_id = path_to_be_used;
     for (idx, path) in path_unused {
@@ -52,11 +60,12 @@ pub fn phase_cc(paths: &[Vec<(usize, usize)>], max_occ: usize) -> (Vec<u8>, f64)
             .zip(result.iter())
             .for_each(|(x, y)| assert_eq!(x.0, y.0));
     }
-    let model = model::Model::new(&paths_with_id, &result, 0);
-    let likelihoods = paths.iter().map(|x| model.likelihood(x)).sum::<f64>();
-    debug!("LK:{:.4}", likelihoods);
-    let result: Vec<u8> = result.into_iter().map(|x| x.1).collect();
-    (result, likelihoods)
+    result.into_iter().map(|x| x.1).collect()
+    // let model = model::Model::new(&paths_with_id, &result, 0f64);
+    // let likelihoods = paths.iter().map(|x| model.likelihood(x)).sum::<f64>();
+    // debug!("LK:{:.4}", likelihoods);
+    // let result: Vec<u8> = result.into_iter().map(|x| x.1).collect();
+    // (result, likelihoods)
 }
 
 type PathWithID<'a> = (usize, &'a [(usize, usize)]);
@@ -212,9 +221,9 @@ fn exact_phase(
         let mut ls_hat_i_arg = vec![0; 2usize.pow(intersection_size)];
         // partition on R(D_0) and partition on R(D_0) and R(D_1)
         let mut pattern = 0;
-        for partition in 0..(1 << boundary_paths[0].len() as usize) {
+        for partition in 0usize..(1 << boundary_paths[0].len() as usize) {
             if partition != 0 {
-                let flip_bit = (((partition - 1) ^ partition) as usize).trailing_ones();
+                let flip_bit = ((partition - 1) ^ partition).trailing_ones();
                 pattern = convert_current_to_next.flip_from(pattern, flip_bit);
             }
             let update = ls_node[0][partition];
@@ -225,7 +234,7 @@ fn exact_phase(
         }
         (ls_hat, vec![ls_hat_i_arg])
     };
-    for i in 1..num_of_nodes - 1 {
+    for (i, ls_node) in ls_node.iter().enumerate().take(num_of_nodes - 1).skip(1) {
         debug!("Computing \\hat{{L}}[{}] from previous \\hat{{L}}", i);
         let convert_pattern_current_to_prev =
             boundary_paths[i].get_intersection_pattern(&boundary_paths[i - 1]);
@@ -239,12 +248,12 @@ fn exact_phase(
         let (mut prev_pattern, mut next_pattern, mut node_pattern) = (0, 0, 0);
         for partition in 0..(1 << boundary_paths[i].len()) as usize {
             if partition != 0 {
-                let flip_bit = (((partition - 1) ^ partition) as usize).trailing_ones();
+                let flip_bit = ((partition - 1) ^ partition).trailing_ones();
                 prev_pattern = convert_pattern_current_to_prev.flip_from(prev_pattern, flip_bit);
                 next_pattern = convert_pattern_current_to_next.flip_from(next_pattern, flip_bit);
                 node_pattern = convert_pattern_current_to_node.flip_from(node_pattern, flip_bit);
             }
-            let update = ls_hat[prev_pattern] + ls_node[i][node_pattern];
+            let update = ls_hat[prev_pattern] + ls_node[node_pattern];
             if ls_hat_next[next_pattern] < update {
                 ls_hat_next[next_pattern] = update;
                 ls_hat_arg_next[next_pattern] = partition;
@@ -263,7 +272,7 @@ fn exact_phase(
         (0..(1 << boundary_paths[i].len() as u64) as usize)
             .map(|partition| {
                 if partition != 0 {
-                    let flip_bit = (((partition - 1) ^ partition) as usize).trailing_ones();
+                    let flip_bit = ((partition - 1) ^ partition).trailing_ones();
                     prev_pattern =
                         convert_pattern_current_to_prev.flip_from(prev_pattern, flip_bit);
                     node_pattern =
@@ -444,50 +453,79 @@ pub struct IntersectPattern {
     // If the i-th bit of `pattern` is 1,
     // then, the i-th read is in the `fat_pattern[i]`-th bit in the
     // converted pattern.
-    fat_pattern: Vec<usize>,
+    // fat_pattern: Vec<usize>,
 }
 
 impl IntersectPattern {
     fn new(pattern: usize, len: usize) -> Self {
-        let (mut fat_pattern, mut pointer) = (vec![], 0);
-        for i in 0..len {
-            fat_pattern.push(pointer);
-            if ((pattern >> i) & 0b1) == 0b1 {
-                pointer += 1;
-            }
-        }
+        // let mut pointer = 0;
+        // for i in 0..len {
+        //     fat_pattern.push(pointer);
+        //     if ((pattern >> i) & 0b1) == 0b1 {
+        //         pointer += 1;
+        //     }
+        // }
         Self {
             pattern,
             len,
-            fat_pattern,
+            // fat_pattern,
         }
     }
-    #[allow(dead_code)]
-    fn update(&self, prev_pattern: usize, flip_bit: usize) -> usize {
-        if ((self.pattern >> flip_bit) & 0b1) == 0b1 {
-            // The flipped bit is in the intersection.
-            let flip_bit = self.fat_pattern[flip_bit];
-            prev_pattern ^ (0b1 << flip_bit)
-        } else {
-            // The flipped bit is irrelavant to the intersection.
-            prev_pattern
-        }
-    }
+    // #[allow(dead_code)]
+    // fn update(&self, prev_pattern: usize, flip_bit: usize) -> usize {
+    //     if ((self.pattern >> flip_bit) & 0b1) == 0b1 {
+    //         // The flipped bit is in the intersection.
+    //         let flip_bit = self.fat_pattern[flip_bit];
+    //         prev_pattern ^ (0b1 << flip_bit)
+    //     } else {
+    //         // The flipped bit is irrelavant to the intersection.
+    //         prev_pattern
+    //     }
+    // }
     #[inline]
     fn flip_from(&self, pattern: usize, flip_bit: u32) -> usize {
-        let mut pattern = pattern;
-        if flip_bit == 1 {
-            pattern ^= self.pattern & 0b1;
-        } else {
-            for i in 0..flip_bit {
+        // let mut pattern = pattern;
+        // if flip_bit == 1 {
+        //     pattern ^= self.pattern & 0b1;
+        // } else {
+        //     let mut location = 0;
+        //     (0..flip_bit).for_each(|i| {
+        //         let probe = (self.pattern >> i) & 0b1;
+        //         pattern ^= probe << location;
+        //         location += probe;
+        //     });
+        // }
+        // pattern
+        (0..flip_bit)
+            .fold((pattern, 0), |(pattern, location), i| {
                 let probe = (self.pattern >> i) & 0b1;
-                let mask = (1 << i) - 1;
-                let location = (self.pattern & mask).count_ones();
-                pattern ^= probe << location;
-            }
-        }
-        pattern
+                (pattern ^ (probe << location), location + probe)
+            })
+            .0
     }
+    #[allow(dead_code)]
+    #[inline]
+    fn flip_from_mut(&self, pattern: &mut usize, flip_bit: u32) {
+        // let mut pattern = pattern;
+        // if flip_bit == 1 {
+        //     pattern ^= self.pattern & 0b1;
+        // } else {
+        //     let mut location = 0;
+        //     (0..flip_bit).for_each(|i| {
+        //         let probe = (self.pattern >> i) & 0b1;
+        //         pattern ^= probe << location;
+        //         location += probe;
+        //     });
+        // }
+        // pattern
+        let mut location = 0;
+        (0..flip_bit).for_each(|i| {
+            let probe = (self.pattern >> i) & 0b1;
+            *pattern ^= probe << location;
+            location += probe;
+        });
+    }
+
     fn convert(&self, pattern: usize) -> usize {
         assert!((pattern >> self.len).count_ones() == 0);
         let mut result = 0;

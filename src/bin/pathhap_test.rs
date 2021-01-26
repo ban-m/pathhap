@@ -5,12 +5,12 @@ use std::collections::HashMap;
 fn main() {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
     // Parameters.
-    let template_length = 200;
-    let duplication_rate = 0.01;
-    let hap_dup_rate = 0.001;
-    let hap_ins_rate = 0.001;
-    let hap_del_rate = 0.001;
-    let read_num = 1000;
+    let template_length = 2000;
+    let duplication_rate = 0.0001;
+    let hap_dup_rate = 0.0001;
+    let hap_ins_rate = 0.0001;
+    let hap_del_rate = 0.0001;
+    let read_num = 30000;
     let min_length = 3;
     let max_length = 6;
     let error_rate = 0.05;
@@ -57,7 +57,7 @@ fn test(
             }
         })
         .collect();
-    eprintln!("{:?}", template);
+    // eprintln!("{:?}", template);
     // Let's make diploids.
     let hap1: Vec<_> = template
         .iter()
@@ -105,7 +105,7 @@ fn test(
             (id, path)
         })
         .collect();
-    let result = path_phasing::phase(&reads, 15);
+    let result = path_phasing::phase(&reads, 25);
     let hap1 = result.get(&"0");
     let hap2_id = format!("{}", read_num - 1);
     let hap2 = result.get(hap2_id.as_str());

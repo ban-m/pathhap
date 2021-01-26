@@ -1,6 +1,6 @@
 use clap::{App, Arg, SubCommand};
+use log::error;
 use std::io::{BufRead, BufReader};
-
 fn subcommand_phasing() -> App<'static, 'static> {
     SubCommand::with_name("phasing")
         .version("0.1")
@@ -128,6 +128,8 @@ fn main() -> std::io::Result<()> {
             path_phasing::phase(&paths, max_cov)
         }
         ("haplotyping", Some(sub_m)) => {
+            error!("This functionality is under development.");
+            error!("Please use `phasing` module instead.");
             let max_len = sub_m.value_of("max_prefetch").unwrap();
             let max_len: usize = match max_len.parse() {
                 Ok(res) => res,

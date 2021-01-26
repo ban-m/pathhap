@@ -1,6 +1,39 @@
 use log::debug;
 use rand::Rng;
 use std::collections::{HashMap, HashSet};
+pub fn em_clustering(paths: &[Vec<(usize, usize)>], init_cluster: &[u8]) -> (Vec<u8>, f64) {
+    let mut weights: Vec<_> = init_cluster
+        .iter()
+        .map(|&x| {
+            if x == 0 {
+                vec![1f64, 0f64]
+            } else {
+                vec![0f64, 1f64]
+            }
+        })
+        .collect();
+    let mut model = Model::create(&paths, &weights);
+    debug!("Start EM algorithm.");
+    let mut lk = paths.iter().map(|path| model.lk(path)).sum::<f64>();
+    for i in 0.. {
+        debug!("LK\t{}\t{:?}", i, lk);
+        for (ws, path) in weights.iter_mut().zip(paths.iter()) {
+            *ws = model.weights(&path);
+        }
+        model.update(&paths, &weights);
+        let next_lk = paths.iter().map(|path| model.lk(path)).sum::<f64>();
+        if next_lk - lk < 0.0001 {
+            break;
+        } else {
+            lk = next_lk;
+        }
+    }
+    let assignments: Vec<_> = weights
+        .iter()
+        .map(|ws| if ws[0] < ws[1] { 1 } else { 0 })
+        .collect();
+    (assignments, lk)
+}
 pub fn em_progressive_clustering<R: Rng>(
     paths: &[(usize, Vec<(usize, usize)>)],
     rng: &mut R,
@@ -136,6 +169,68 @@ pub struct Model {
 
 impl Model {
     const SMALL: f64 = 0.0000001;
+    pub fn create(paths: &[Vec<(usize, usize)>], weights: &[Vec<f64>]) -> Self {
+        let mut cluster_num: HashMap<usize, usize> = HashMap::new();
+        for path in paths.iter() {
+            for &(n, c) in path.iter() {
+                cluster_num
+                    .entry(n)
+                    .and_modify(|x| *x = (*x).max(c + 1))
+                    .or_insert(c + 1);
+            }
+        }
+        let mut hap1: HashMap<_, _> = cluster_num
+            .iter()
+            .map(|(&node, &cluster)| (node, vec![0f64; cluster]))
+            .collect();
+        let mut hap2 = hap1.clone();
+        for (ws, path) in weights.iter().zip(paths.iter()) {
+            for &(n, c) in path.iter() {
+                hap1.get_mut(&n).unwrap()[c] += ws[0];
+                hap2.get_mut(&n).unwrap()[c] += ws[1];
+            }
+        }
+        hap1.values_mut().for_each(|ws| {
+            let sum = ws.iter().sum::<f64>();
+            if sum > Self::SMALL {
+                ws.iter_mut().for_each(|w| *w /= sum);
+            }
+        });
+        hap2.values_mut().for_each(|ws| {
+            let sum = ws.iter().sum::<f64>();
+            if sum > Self::SMALL {
+                ws.iter_mut().for_each(|w| *w /= sum);
+            }
+        });
+        let nodes: HashSet<usize> = cluster_num.keys().copied().collect();
+        Self { hap1, hap2, nodes }
+    }
+    pub fn update(&mut self, paths: &[Vec<(usize, usize)>], weights: &[Vec<f64>]) {
+        self.hap1
+            .values_mut()
+            .for_each(|xs| xs.iter_mut().for_each(|x| *x = 0f64));
+        self.hap2
+            .values_mut()
+            .for_each(|xs| xs.iter_mut().for_each(|x| *x = 0f64));
+        for (ws, path) in weights.iter().zip(paths.iter()) {
+            for &(n, c) in path.iter() {
+                self.hap1.get_mut(&n).unwrap()[c] += ws[0];
+                self.hap2.get_mut(&n).unwrap()[c] += ws[1];
+            }
+        }
+        self.hap1.values_mut().for_each(|ws| {
+            let sum = ws.iter().sum::<f64>();
+            if sum > Self::SMALL {
+                ws.iter_mut().for_each(|w| *w /= sum);
+            }
+        });
+        self.hap2.values_mut().for_each(|ws| {
+            let sum = ws.iter().sum::<f64>();
+            if sum > Self::SMALL {
+                ws.iter_mut().for_each(|w| *w /= sum);
+            }
+        });
+    }
     pub fn create_on(
         units: &HashSet<usize>,
         genotypes: &HashMap<usize, usize>,

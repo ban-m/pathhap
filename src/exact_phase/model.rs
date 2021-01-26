@@ -80,7 +80,7 @@ impl Model {
     pub fn new(
         paths: &[(usize, &[(usize, usize)])],
         haplotypes: &[(usize, u8)],
-        pseudo_count: u32,
+        pseudo_count: f64,
     ) -> Self {
         let haplotypes: HashMap<usize, u8> = haplotypes.iter().copied().collect();
         let nodes_and_clusters = {
@@ -99,12 +99,7 @@ impl Model {
             clusters
         };
         let mut hap_count: Vec<Vec<Vec<u32>>> = (0..Self::PLOIDY)
-            .map(|_| {
-                nodes_and_clusters
-                    .iter()
-                    .map(|&cl| vec![pseudo_count; cl])
-                    .collect()
-            })
+            .map(|_| nodes_and_clusters.iter().map(|&cl| vec![0; cl]).collect())
             .collect();
         for (r, path) in paths.iter() {
             assert!(haplotypes.contains_key(r));
@@ -119,11 +114,12 @@ impl Model {
             .map(|xss| {
                 xss.iter()
                     .map(|xs| {
-                        let sum = xs.iter().sum::<u32>();
-                        if sum > 0 {
-                            xs.iter().map(|&x| x as f64 / sum as f64).collect()
+                        let xs: Vec<f64> = xs.iter().map(|&x| x as f64 + pseudo_count).collect();
+                        let sum = xs.iter().sum::<f64>();
+                        if sum > 0.0001 {
+                            xs.iter().map(|&x| x / sum).collect()
                         } else {
-                            vec![0.; xs.len()]
+                            vec![(xs.len() as f64).recip(); xs.len()]
                         }
                     })
                     .collect()

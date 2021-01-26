@@ -5,24 +5,22 @@ use std::collections::HashMap;
 fn main() {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
     // Parameters.
-    let template_length = 200;
-    let duplication_rate = 0.01;
+    let template_length = 100;
+    let duplication_rate = 0.001;
     let hap_dup_rate = 0.001;
     let hap_ins_rate = 0.001;
     let hap_del_rate = 0.001;
-    let read_num = 1000;
+    let read_num = 10000;
     let min_length = 3;
     let max_length = 6;
     let error_rate = 0.05;
-    let seed = 100;
-    let start = std::time::Instant::now();
+    let seed = 10121;
     test(
         template_length,
         (duplication_rate, hap_dup_rate, hap_ins_rate, hap_del_rate),
         (read_num, min_length, max_length, error_rate),
         seed,
     );
-    eprintln!("{:?}", (std::time::Instant::now() - start).as_millis());
 }
 
 fn test(
@@ -49,7 +47,7 @@ fn test(
             }
         })
         .collect();
-    eprintln!("{:?}", template);
+    // eprintln!("{:?}", template);
     // Let's make diploids.
     let hap1: Vec<_> = template
         .iter()
@@ -89,7 +87,7 @@ fn test(
         })
         .collect();
     // eprintln!("hap2:{:?}", hap2);
-    let reads: Vec<_> = (0..read_num)
+    let mut reads: Vec<_> = (0..read_num)
         .map(|x| {
             let id = format!("{}", x);
             let hap = if 2 * x / read_num == 0 { &hap1 } else { &hap2 };
@@ -97,16 +95,20 @@ fn test(
             (id, path)
         })
         .collect();
+    reads.shuffle(&mut rng);
+    // let result = path_phasing::haplotyping(&reads, 25, 0.05);
+    let start = std::time::Instant::now();
     let result = path_phasing::phase(&reads, 20);
+    eprintln!("{:?}", (std::time::Instant::now() - start).as_millis());
     let hap1 = result.get(&"0");
     let hap2_id = format!("{}", read_num - 1);
     let hap2 = result.get(hap2_id.as_str());
     let errors = reads
         .iter()
-        .enumerate()
-        .filter(|(i, (id, _))| {
+        .filter(|(id, _)| {
             assert!(result.contains_key(id.as_str()), "{}", id);
             let pred = result.get(id.as_str());
+            let i = id.parse::<usize>().unwrap();
             let answer = if 2 * i / read_num == 0 { hap1 } else { hap2 };
             match answer != pred {
                 true => true,

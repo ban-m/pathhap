@@ -1,6 +1,6 @@
 use super::graph_traversal::*;
 use super::model;
-use log::{debug, warn};
+use log::{debug, error, warn};
 use std::collections::{HashMap, HashSet};
 const ERROR_FRACTION: f64 = 0.05;
 pub fn haplotype_cc(paths: &[Vec<(usize, usize)>], max_len: usize, er: f64) -> (Vec<u8>, f64) {
@@ -18,13 +18,13 @@ pub fn haplotype_cc(paths: &[Vec<(usize, usize)>], max_len: usize, er: f64) -> (
         &split_paths,
         er,
     );
-    let model = model::Model::new(&split_paths, &result, 0);
+    let model = model::Model::new(&split_paths, &result, 0.1);
     let result: Vec<_> = paths.iter().map(|path| model.predict_path(path)).collect();
     let lk = {
         let paths: Vec<(usize, &[(usize, usize)])> =
             paths.iter().map(|x| x.as_slice()).enumerate().collect();
         let result: Vec<_> = result.iter().copied().enumerate().collect();
-        let model = model::Model::new(&paths, &result, 1);
+        let model = model::Model::new(&paths, &result, 0.1);
         paths.iter().map(|(_, x)| model.likelihood(x)).sum::<f64>()
     };
     (result, lk)
@@ -458,6 +458,16 @@ fn downsampling_up_to<'a>(
     paths: &'a [Vec<(usize, usize)>],
     max_len: usize,
 ) -> Vec<(usize, &'a [(usize, usize)])> {
+    let cluster_num = {
+        let mut cluster_num: HashMap<usize, usize> = HashMap::new();
+        for p in paths.iter() {
+            for &(n, c) in p.iter() {
+                let cl = cluster_num.entry(n).or_default();
+                *cl = (*cl).max(c + 1);
+            }
+        }
+        cluster_num
+    };
     let paths: Vec<_> = paths.iter().map(|x| x.as_slice()).enumerate().collect();
     let boundary_nodes = get_boundary_nodes_on(&order, &paths);
     let beginning_paths = get_beginning_paths(&boundary_nodes, &paths);
@@ -471,11 +481,29 @@ fn downsampling_up_to<'a>(
             }
             let new_nodes: HashSet<_> =
                 get_prefetch_nodes_on(&begin_paths, &paths, &haplotyped_nodes);
-            let current_haplotyping_size = new_nodes.union(&current_focus_nodes).count();
+            let current_haplotyping_size = new_nodes
+                .union(&current_focus_nodes)
+                .map(|n| cluster_num[n])
+                .sum::<usize>();
+            debug!("{:?}", current_focus_nodes);
             if current_haplotyping_size > max_len {
                 // Split the longest reads in begin_paths into half.
                 let max_path = *begin_paths.iter().max_by_key(|id| paths[id].len()).unwrap();
                 let longest_path = paths.remove(&max_path).unwrap();
+                if longest_path.len() < 3 {
+                    for i in begin_paths.iter().filter(|&&x| x != max_path) {
+                        debug!("{:?}", paths[i]);
+                    }
+                    error!(
+                        "At node {}, there are {} beginning paths.",
+                        focal_node,
+                        begin_paths.len()
+                    );
+                    error!("There are {} prefetch nodes.", current_haplotyping_size);
+                    error!("It can not be reduced even if all paths are cut into edges.");
+                    error!("Panic. Please clean up your dataset before input.");
+                    panic!()
+                }
                 // Maybe we can use the remaining path somehow.
                 let split_path = split_path_at(longest_path, focal_node);
                 paths.insert(max_path, split_path);
@@ -565,6 +593,9 @@ impl std::iter::IntoIterator for Paths {
 }
 
 impl Paths {
+    fn len(&self) -> usize {
+        self.paths.len()
+    }
     pub fn is_empty(&self) -> bool {
         self.paths.is_empty()
     }

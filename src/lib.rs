@@ -70,8 +70,9 @@ pub fn phase(paths: &[(String, Vec<(u64, u64)>)], max_occ: usize) -> HashMap<&st
         .iter()
         .map(|paths| {
             let normed_paths = normalize_path(paths);
-            // normed_paths.shuffle(&mut rng);
-            let (phased_paths, lk) = phase_cc(&normed_paths, max_occ);
+            let phased_paths = phase_cc(&normed_paths, max_occ);
+            // Polish clustering by EM algorthm
+            let (phased_paths, lk) = em_progressive::em_clustering(&normed_paths, &phased_paths);
             debug!("Maximum likelihood:{:.3}", lk);
             total_lk += lk;
             phased_paths
