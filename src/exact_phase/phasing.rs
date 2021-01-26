@@ -1,7 +1,8 @@
 //! phasing module by GraphWhatsHap.
 use super::graph_traversal::*;
 use super::model;
-use log::{debug, error};
+use log::{debug, error, info};
+use rayon::prelude::*;
 use std::collections::{HashMap, HashSet};
 // Phaing connected components.
 pub fn phase_cc(paths: &[Vec<(usize, usize)>], max_occ: usize) -> Vec<u8> {
@@ -36,15 +37,6 @@ pub fn phase_cc(paths: &[Vec<(usize, usize)>], max_occ: usize) -> Vec<u8> {
         &boundary_nodes,
         &boundary_paths,
     );
-    // {
-    //     let paths: HashMap<usize, _> = path_to_be_used.iter().copied().collect();
-    //     for (i, _) in result.iter().filter(|&&(_, hap)| hap == 0) {
-    //         eprintln!("0\t{:?}", paths[i])
-    //     }
-    //     for (i, _) in result.iter().filter(|&&(_, hap)| hap == 1) {
-    //         eprintln!("1\t{:?}", paths[i])
-    //     }
-    // }
     let model = model::Model::new(&path_to_be_used, &result, 0.1);
     debug!("Finished");
     let mut paths_with_id = path_to_be_used;
@@ -61,11 +53,6 @@ pub fn phase_cc(paths: &[Vec<(usize, usize)>], max_occ: usize) -> Vec<u8> {
             .for_each(|(x, y)| assert_eq!(x.0, y.0));
     }
     result.into_iter().map(|x| x.1).collect()
-    // let model = model::Model::new(&paths_with_id, &result, 0f64);
-    // let likelihoods = paths.iter().map(|x| model.likelihood(x)).sum::<f64>();
-    // debug!("LK:{:.4}", likelihoods);
-    // let result: Vec<u8> = result.into_iter().map(|x| x.1).collect();
-    // (result, likelihoods)
 }
 
 type PathWithID<'a> = (usize, &'a [(usize, usize)]);
@@ -191,6 +178,7 @@ fn exact_phase(
     boundary_nodes: &[Nodes],
     boundary_paths: &[PathSet],
 ) -> Vec<(usize, u8)> {
+    assert_eq!(num_of_nodes, boundary_paths.len());
     // Strip ids from paths.
     debug!("Begin");
     for (idx, (id, p)) in paths.iter().enumerate() {
@@ -207,84 +195,32 @@ fn exact_phase(
     }
     // calculate each bipartition on each nodes.
     let ls_node: Vec<Vec<_>> = order
-        .iter()
-        .zip(node_paths.iter())
+        .par_iter()
+        .zip(node_paths.par_iter())
         .map(|(&node, paths_on_node)| enumerate_all_bipartition(&paths, paths_on_node, node))
         .collect();
     assert!(ls_node.iter().all(|xs| xs.iter().all(|&x| x < 0.000001)));
-    let (mut ls_hat, mut ls_hat_arg) = {
-        debug!("Summarizing 0-th node");
-        let convert_current_to_next =
-            boundary_paths[0].get_intersection_pattern(&boundary_paths[1]);
-        let intersection_size = boundary_paths[0].count_intersection(&boundary_paths[1]) as u32;
-        let mut ls_hat = vec![std::f64::NEG_INFINITY; 2usize.pow(intersection_size)];
-        let mut ls_hat_i_arg = vec![0; 2usize.pow(intersection_size)];
-        // partition on R(D_0) and partition on R(D_0) and R(D_1)
-        let mut pattern = 0;
-        for partition in 0usize..(1 << boundary_paths[0].len() as usize) {
-            if partition != 0 {
-                let flip_bit = ((partition - 1) ^ partition).trailing_ones();
-                pattern = convert_current_to_next.flip_from(pattern, flip_bit);
-            }
-            let update = ls_node[0][partition];
-            if ls_hat[pattern] < update {
-                ls_hat[pattern] = update;
-                ls_hat_i_arg[pattern] = partition;
-            }
-        }
-        (ls_hat, vec![ls_hat_i_arg])
-    };
-    for (i, ls_node) in ls_node.iter().enumerate().take(num_of_nodes - 1).skip(1) {
+    let (mut ls_hat, mut ls_hat_arg) = (vec![], vec![]);
+    let start = std::time::Instant::now();
+    for (i, ls_node) in ls_node.iter().enumerate() {
         debug!("Computing \\hat{{L}}[{}] from previous \\hat{{L}}", i);
-        let convert_pattern_current_to_prev =
-            boundary_paths[i].get_intersection_pattern(&boundary_paths[i - 1]);
-        let convert_pattern_current_to_next =
-            boundary_paths[i].get_intersection_pattern(&boundary_paths[i + 1]);
-        let convert_pattern_current_to_node =
-            boundary_paths[i].get_intersection_pattern(&node_paths[i]);
-        let intersection_size = boundary_paths[i].count_intersection(&boundary_paths[i + 1]) as u32;
-        let mut ls_hat_next = vec![std::f64::NEG_INFINITY; 2usize.pow(intersection_size)];
-        let mut ls_hat_arg_next = vec![0; 2usize.pow(intersection_size)];
-        let (mut prev_pattern, mut next_pattern, mut node_pattern) = (0, 0, 0);
-        for partition in 0..(1 << boundary_paths[i].len()) as usize {
-            if partition != 0 {
-                let flip_bit = ((partition - 1) ^ partition).trailing_ones();
-                prev_pattern = convert_pattern_current_to_prev.flip_from(prev_pattern, flip_bit);
-                next_pattern = convert_pattern_current_to_next.flip_from(next_pattern, flip_bit);
-                node_pattern = convert_pattern_current_to_node.flip_from(node_pattern, flip_bit);
-            }
-            let update = ls_hat[prev_pattern] + ls_node[node_pattern];
-            if ls_hat_next[next_pattern] < update {
-                ls_hat_next[next_pattern] = update;
-                ls_hat_arg_next[next_pattern] = partition;
-            }
-        }
-        ls_hat_arg.push(ls_hat_arg_next);
+        let (ls_hat_next, ls_hat_arg_next) = match rayon::current_num_threads() {
+            1 => fill_next_ls(&boundary_paths, i, &node_paths[i], ls_node, &ls_hat),
+            _ => fill_next_ls_par(&boundary_paths, i, &node_paths[i], ls_node, &ls_hat),
+            //_ => fill_next_ls(&boundary_paths, i, &node_paths[i], ls_node, &ls_hat),
+        };
         ls_hat = ls_hat_next;
+        ls_hat_arg.push(ls_hat_arg_next);
     }
-    let (argmax, ls_max) = {
-        let i = num_of_nodes - 1;
-        let convert_pattern_current_to_prev =
-            boundary_paths[i].get_intersection_pattern(&boundary_paths[i - 1]);
-        let convert_pattern_current_to_node =
-            boundary_paths[i].get_intersection_pattern(&node_paths[i]);
-        let (mut prev_pattern, mut node_pattern) = (0, 0);
-        (0..(1 << boundary_paths[i].len() as u64) as usize)
-            .map(|partition| {
-                if partition != 0 {
-                    let flip_bit = ((partition - 1) ^ partition).trailing_ones();
-                    prev_pattern =
-                        convert_pattern_current_to_prev.flip_from(prev_pattern, flip_bit);
-                    node_pattern =
-                        convert_pattern_current_to_node.flip_from(node_pattern, flip_bit);
-                }
-                assert!(boundary_nodes[i].contains(&order[i]));
-                (partition, ls_hat[prev_pattern] + ls_node[i][node_pattern])
-            })
-            .max_by(|a, b| (a.1).partial_cmp(&b.1).unwrap())
-            .unwrap()
-    };
+    info!("GHap:{}", (std::time::Instant::now() - start).as_millis());
     // Traceback.
+    let (argmax, ls_max) = ls_hat_arg
+        .pop()
+        .unwrap()
+        .into_iter()
+        .zip(ls_hat)
+        .max_by(|a, b| (a.1).partial_cmp(&b.1).unwrap())
+        .unwrap();
     debug!("Max LK is {:?}, {:?}", ls_max, argmax);
     let (mut hap1, mut hap2) = (HashSet::new(), HashSet::new());
     // partition of 0 is the unique partition for the empty set, ((),()).
@@ -325,10 +261,253 @@ fn exact_phase(
         debug!("HAP\t1\t{}\t{:?}", r, paths[r]);
     }
     assert!(hap1.is_disjoint(&hap2));
-    let mut phasing = vec![];
-    phasing.extend(hap1.into_iter().map(|r| (paths[r].0, 0)));
-    phasing.extend(hap2.into_iter().map(|r| (paths[r].0, 1)));
-    phasing
+    hap1.into_iter()
+        .map(|r| (paths[r].0, 0))
+        .chain(hap2.into_iter().map(|r| (paths[r].0, 1)))
+        .collect()
+}
+
+fn fill_next_ls(
+    boundary_paths: &[PathSet],
+    i: usize,
+    node_paths: &PathSet,
+    ls_node: &[f64],
+    ls_hat: &[f64],
+) -> (Vec<f64>, Vec<usize>) {
+    if i == 0 {
+        let convert_current_to_next =
+            boundary_paths[0].get_intersection_pattern(&boundary_paths[1]);
+        let intersection_size = boundary_paths[0].count_intersection(&boundary_paths[1]) as u32;
+        let mut ls_hat = vec![std::f64::NEG_INFINITY; 2usize.pow(intersection_size)];
+        let mut ls_hat_i_arg = vec![0; 2usize.pow(intersection_size)];
+        // partition on R(D_0) and partition on R(D_0) and R(D_1)
+        let mut pattern = 0;
+        for partition in 0usize..(1 << boundary_paths[0].len() as usize) {
+            if partition != 0 {
+                let flip_bit = ((partition - 1) ^ partition).trailing_ones();
+                pattern = convert_current_to_next.flip_from_fast(pattern, flip_bit);
+            }
+            let update = ls_node[partition];
+            if ls_hat[pattern] < update {
+                ls_hat[pattern] = update;
+                ls_hat_i_arg[pattern] = partition;
+            }
+        }
+        (ls_hat, ls_hat_i_arg)
+    } else if i == boundary_paths.len() - 1 {
+        let convert_pattern_current_to_prev =
+            boundary_paths[i].get_intersection_pattern(&boundary_paths[i - 1]);
+        let convert_pattern_current_to_node =
+            boundary_paths[i].get_intersection_pattern(&node_paths);
+        let (mut prev_pattern, mut node_pattern) = (0, 0);
+        let pattern_num = 1 << boundary_paths[i].len();
+        (0..(pattern_num as usize))
+            .map(|partition| {
+                if partition != 0 {
+                    let flip_bit = ((partition - 1) ^ partition).trailing_ones();
+                    prev_pattern =
+                        convert_pattern_current_to_prev.flip_from_fast(prev_pattern, flip_bit);
+                    node_pattern =
+                        convert_pattern_current_to_node.flip_from_fast(node_pattern, flip_bit);
+                }
+                (ls_hat[prev_pattern] + ls_node[node_pattern], partition)
+            })
+            .unzip()
+    } else {
+        let convert_pattern_current_to_prev =
+            boundary_paths[i].get_intersection_pattern(&boundary_paths[i - 1]);
+        let convert_pattern_current_to_next =
+            boundary_paths[i].get_intersection_pattern(&boundary_paths[i + 1]);
+        let convert_pattern_current_to_node =
+            boundary_paths[i].get_intersection_pattern(node_paths);
+        let intersection_size = boundary_paths[i].count_intersection(&boundary_paths[i + 1]) as u32;
+        let mut ls_hat_next = vec![std::f64::NEG_INFINITY; 2usize.pow(intersection_size)];
+        let mut ls_hat_arg_next = vec![0; 2usize.pow(intersection_size)];
+        let (mut prev_pattern, mut next_pattern, mut node_pattern) = (0, 0, 0);
+        for partition in 0..(1 << boundary_paths[i].len()) as usize {
+            if partition != 0 {
+                let flip_bit = ((partition - 1) ^ partition).trailing_ones();
+                prev_pattern =
+                    convert_pattern_current_to_prev.flip_from_fast(prev_pattern, flip_bit);
+                next_pattern =
+                    convert_pattern_current_to_next.flip_from_fast(next_pattern, flip_bit);
+                node_pattern =
+                    convert_pattern_current_to_node.flip_from_fast(node_pattern, flip_bit);
+            }
+            let update = ls_hat[prev_pattern] + ls_node[node_pattern];
+            if ls_hat_next[next_pattern] < update {
+                ls_hat_next[next_pattern] = update;
+                ls_hat_arg_next[next_pattern] = partition;
+            }
+        }
+        (ls_hat_next, ls_hat_arg_next)
+    }
+}
+
+#[allow(dead_code)]
+fn fill_next_ls_par(
+    boundary_paths: &[PathSet],
+    i: usize,
+    node_paths: &PathSet,
+    ls_node: &[f64],
+    ls_hat: &[f64],
+) -> (Vec<f64>, Vec<usize>) {
+    if i == 0 {
+        let (current, next) = match &boundary_paths[i..=i + 1] {
+            [x, y] => (x, y),
+            _ => panic!(),
+        };
+        let (free_position, fat_pattern) = get_select_array(current, next);
+        let patterns = get_expanded_next_patterns(&fat_pattern);
+        let flip_pattern = get_flip_pattern(&free_position);
+        let flip_pattern_node = get_node_flip_pattern(current, next, node_paths);
+        let convert_pattern_current_to_node = current.get_intersection_pattern(&node_paths);
+        patterns
+            .par_iter()
+            .flat_map(|&free_pattern| {
+                let mut pattern = free_pattern;
+                let mut node_pattern = convert_pattern_current_to_node.convert(pattern);
+                (0..(1 << free_position.len()))
+                    .map(|subst: usize| {
+                        if subst != 0 {
+                            let flipped_bit = ((subst - 1) ^ subst).count_ones() as usize;
+                            pattern ^= flip_pattern[flipped_bit];
+                            node_pattern ^= flip_pattern_node[flipped_bit];
+                        }
+                        (ls_node[node_pattern], pattern)
+                    })
+                    .max_by(|a, b| (a.0).partial_cmp(&b.0).unwrap())
+            })
+            .unzip()
+    } else if i == boundary_paths.len() - 1 {
+        let (prev, current) = match &boundary_paths[i - 1..=i] {
+            [x, y] => (x, y),
+            _ => panic!(),
+        };
+        // Usual computation is OK.
+        let convert_pattern_current_to_prev = current.get_intersection_pattern(prev);
+        let convert_pattern_current_to_node = current.get_intersection_pattern(&node_paths);
+        let (mut prev_pattern, mut node_pattern) = (0, 0);
+        let pattern_num = 1 << current.len();
+        (0..(pattern_num as usize))
+            .map(|partition| {
+                if partition != 0 {
+                    let flip_bit = ((partition - 1) ^ partition).trailing_ones();
+                    prev_pattern =
+                        convert_pattern_current_to_prev.flip_from_fast(prev_pattern, flip_bit);
+                    node_pattern =
+                        convert_pattern_current_to_node.flip_from_fast(node_pattern, flip_bit);
+                }
+                (ls_hat[prev_pattern] + ls_node[node_pattern], partition)
+            })
+            .unzip()
+    } else {
+        let (prev, current, next) = match &boundary_paths[i - 1..=i + 1] {
+            [x, y, z] => (x, y, z),
+            _ => panic!(),
+        };
+        let (free_position, fat_pattern) = get_select_array(current, next);
+        let convert_pattern_current_to_prev = current.get_intersection_pattern(prev);
+        let convert_pattern_current_to_node = current.get_intersection_pattern(&node_paths);
+        // The position of the path not appears in the next paths.
+        let patterns = get_expanded_next_patterns(&fat_pattern);
+        let flip_pattern = get_flip_pattern(&free_position);
+        let flip_pattern_node = get_node_flip_pattern(current, next, node_paths);
+        let flip_pattern_prev = get_prev_flip_pattern(current, next, prev);
+        patterns
+            .par_iter()
+            .map(|&free_pattern| {
+                let mut pattern = free_pattern;
+                let mut prev_pattern = convert_pattern_current_to_prev.convert(pattern);
+                let mut node_pattern = convert_pattern_current_to_node.convert(pattern);
+                (0..(1 << free_position.len()))
+                    .map(|subst: usize| {
+                        if subst != 0 {
+                            let flipped_bit = ((subst - 1) ^ subst).count_ones() as usize;
+                            pattern ^= flip_pattern[flipped_bit];
+                            prev_pattern ^= flip_pattern_prev[flipped_bit];
+                            node_pattern ^= flip_pattern_node[flipped_bit];
+                        }
+                        (ls_hat[prev_pattern] + ls_node[node_pattern], pattern)
+                    })
+                    .max_by(|a, b| (a.0).partial_cmp(&b.0).unwrap())
+                    .unwrap()
+            })
+            .unzip()
+    }
+}
+
+fn get_node_flip_pattern(current: &PathSet, next: &PathSet, paths_on_node: &PathSet) -> Vec<usize> {
+    let mut flip_pattern = vec![0];
+    let mut filled_bit = 0;
+    for path_index in current
+        .iter()
+        .filter(|&&path_index| !next.contains(path_index))
+    {
+        if let Ok(pointer) = paths_on_node.paths.binary_search(path_index) {
+            filled_bit |= 1 << pointer;
+        }
+        flip_pattern.push(filled_bit);
+    }
+    flip_pattern
+}
+
+fn get_prev_flip_pattern(current: &PathSet, next: &PathSet, prev: &PathSet) -> Vec<usize> {
+    let mut flip_pattern = vec![0];
+    let mut filled_bit = 0;
+    let prev: Vec<_> = prev
+        .iter()
+        .copied()
+        .filter(|&n| current.contains(n))
+        .collect();
+    for path_index in current
+        .iter()
+        .filter(|&&path_index| !next.contains(path_index))
+    {
+        if let Ok(pointer) = prev.binary_search(path_index) {
+            filled_bit |= 1 << pointer;
+        }
+        flip_pattern.push(filled_bit);
+    }
+    flip_pattern
+}
+
+fn get_flip_pattern(position: &[usize]) -> Vec<usize> {
+    let mut flip_pattern = vec![0];
+    let mut filled_bit = 0;
+    for &pointer in position {
+        filled_bit |= 1 << pointer;
+        flip_pattern.push(filled_bit);
+    }
+    flip_pattern
+}
+
+fn get_select_array(current: &PathSet, next: &PathSet) -> (Vec<usize>, Vec<usize>) {
+    let (mut free_position, mut fat_pattern) = (vec![], vec![]);
+    for (idx, &path_index) in current.iter().enumerate() {
+        if next.contains(path_index) {
+            fat_pattern.push(idx);
+        } else {
+            free_position.push(idx);
+        }
+    }
+    (free_position, fat_pattern)
+}
+
+// `corresponding_location`:The i-th element is the location of the i-th bit of the next_pattern in the current pattern.
+fn get_expanded_next_patterns(corresponding_location: &[usize]) -> Vec<usize> {
+    let mut pattern: usize = 0;
+    (0..(1usize << corresponding_location.len()))
+        .map(|next_pattern| {
+            if next_pattern != 0 {
+                let fliped_bit = ((next_pattern - 1) ^ next_pattern).trailing_ones() as usize;
+                for &bit in corresponding_location[..fliped_bit].iter() {
+                    pattern ^= 1 << bit;
+                }
+            }
+            pattern
+        })
+        .collect()
 }
 
 fn enumerate_all_bipartition(
@@ -346,22 +525,33 @@ fn enumerate_all_bipartition(
         }
         panic!("Node {} never appears in the dataset.", node);
     }
-    let cluster_num = *paths
+    let paths: Vec<Vec<_>> = path_indices
         .iter()
-        .flat_map(|(_, path)| path.iter().filter(|&&(n, _)| n == node))
-        .map(|(_, c)| c)
-        .max()
-        .unwrap()
-        + 1;
-    (0..2usize.pow(path_number as u32))
-        .map(|path_pattern| {
-            // For read in S and T.
-            let mut bi_counts = [vec![0u32; cluster_num], vec![0u32; cluster_num]];
-            for (i, &path_index) in path_indices.iter().enumerate() {
-                // If path should be in S if the i-th bit is 0, otherwise T.
-                let bucket = (path_pattern >> i) & 1;
-                for &(_, c) in paths[path_index].1.iter().filter(|&&(n, _)| n == node) {
-                    bi_counts[bucket][c] += 1;
+        .map(|&path_index| {
+            paths[path_index]
+                .1
+                .iter()
+                .filter_map(|&(n, c)| if n == node { Some(c) } else { None })
+                .collect()
+        })
+        .collect();
+    let cluster_num = paths.iter().filter_map(|cs| cs.iter().max()).max().unwrap() + 1;
+    let mut bi_counts = [vec![0u32; cluster_num], vec![0u32; cluster_num]];
+    for &c in paths.iter().flat_map(|x| x) {
+        bi_counts[0][c] += 1;
+    }
+    (0..1 << path_number)
+        .map(|pattern: usize| {
+            if pattern != 0 {
+                let flip_path = ((pattern - 1) ^ pattern).count_ones();
+                for (i, path) in paths.iter().take(flip_path as usize).enumerate() {
+                    let next_bucket = (pattern >> i) & 0b1;
+                    let prev_bucket = next_bucket ^ 0b1;
+                    // Remove from previous bucket, add to next bucket.
+                    for &c in path {
+                        bi_counts[prev_bucket][c] -= 1;
+                        bi_counts[next_bucket][c] += 1;
+                    }
                 }
             }
             // Note: sum_i u_i*ln(u_i/T) = sum_i u_i*ln(u_i) - u_i*ln(T) = sum_i u_i*ln(u_i) - T*ln(T)
@@ -369,17 +559,9 @@ fn enumerate_all_bipartition(
                 .iter()
                 .map(|xs| xs.iter().copied().map(xlnx).sum::<f64>())
                 .sum::<f64>();
-            let s_num = bi_counts[0].iter().sum::<u32>();
-            let t_num = bi_counts[1].iter().sum::<u32>();
+            let s_num: u32 = bi_counts[0].iter().sum::<_>();
+            let t_num: u32 = bi_counts[1].iter().sum::<_>();
             let lk = log_likelihood - xlnx(s_num) - xlnx(t_num);
-            assert!(
-                lk < 0.0000001,
-                "{:.3},{:.3},{:.3},{:.3}",
-                lk,
-                log_likelihood,
-                s_num,
-                t_num
-            );
             lk
         })
         .collect()
@@ -424,7 +606,6 @@ impl PathSet {
         self.paths.is_empty()
     }
     fn count_intersection(&self, other: &Self) -> usize {
-        // TODO: faster method is available(by merge sort like procedure.)
         let set = self.paths.iter().copied().collect::<HashSet<_>>();
         other.paths.iter().filter(|x| set.contains(x)).count()
     }
@@ -441,6 +622,9 @@ impl PathSet {
         }
         IntersectPattern::new(bitpattern, self.paths.len())
     }
+    fn contains(&self, path_index: usize) -> bool {
+        self.paths.binary_search(&path_index).is_ok()
+    }
 }
 
 /// Bit Convert struct.
@@ -450,52 +634,31 @@ impl PathSet {
 pub struct IntersectPattern {
     len: usize,
     pattern: usize,
-    // If the i-th bit of `pattern` is 1,
-    // then, the i-th read is in the `fat_pattern[i]`-th bit in the
-    // converted pattern.
-    // fat_pattern: Vec<usize>,
+    // Return the flipping bits if the i-th bit of the original pattern was flipped.
+    flip_pattern: Vec<usize>,
 }
 
 impl IntersectPattern {
     fn new(pattern: usize, len: usize) -> Self {
-        // let mut pointer = 0;
-        // for i in 0..len {
-        //     fat_pattern.push(pointer);
-        //     if ((pattern >> i) & 0b1) == 0b1 {
-        //         pointer += 1;
-        //     }
-        // }
+        // First put zero. Mock value.
+        let mut flip_pattern = vec![0];
+        let (mut pointer, mut filled_bit) = (1, 0);
+        for flip_bit in 0..len {
+            if (pattern >> flip_bit) & 0b1 == 0b1 {
+                filled_bit |= pointer;
+                pointer = pointer << 1;
+            }
+            flip_pattern.push(filled_bit);
+        }
         Self {
             pattern,
             len,
-            // fat_pattern,
+            flip_pattern,
         }
     }
-    // #[allow(dead_code)]
-    // fn update(&self, prev_pattern: usize, flip_bit: usize) -> usize {
-    //     if ((self.pattern >> flip_bit) & 0b1) == 0b1 {
-    //         // The flipped bit is in the intersection.
-    //         let flip_bit = self.fat_pattern[flip_bit];
-    //         prev_pattern ^ (0b1 << flip_bit)
-    //     } else {
-    //         // The flipped bit is irrelavant to the intersection.
-    //         prev_pattern
-    //     }
-    // }
+    #[allow(dead_code)]
     #[inline]
     fn flip_from(&self, pattern: usize, flip_bit: u32) -> usize {
-        // let mut pattern = pattern;
-        // if flip_bit == 1 {
-        //     pattern ^= self.pattern & 0b1;
-        // } else {
-        //     let mut location = 0;
-        //     (0..flip_bit).for_each(|i| {
-        //         let probe = (self.pattern >> i) & 0b1;
-        //         pattern ^= probe << location;
-        //         location += probe;
-        //     });
-        // }
-        // pattern
         (0..flip_bit)
             .fold((pattern, 0), |(pattern, location), i| {
                 let probe = (self.pattern >> i) & 0b1;
@@ -503,29 +666,10 @@ impl IntersectPattern {
             })
             .0
     }
-    #[allow(dead_code)]
     #[inline]
-    fn flip_from_mut(&self, pattern: &mut usize, flip_bit: u32) {
-        // let mut pattern = pattern;
-        // if flip_bit == 1 {
-        //     pattern ^= self.pattern & 0b1;
-        // } else {
-        //     let mut location = 0;
-        //     (0..flip_bit).for_each(|i| {
-        //         let probe = (self.pattern >> i) & 0b1;
-        //         pattern ^= probe << location;
-        //         location += probe;
-        //     });
-        // }
-        // pattern
-        let mut location = 0;
-        (0..flip_bit).for_each(|i| {
-            let probe = (self.pattern >> i) & 0b1;
-            *pattern ^= probe << location;
-            location += probe;
-        });
+    fn flip_from_fast(&self, pattern: usize, flip_bit: u32) -> usize {
+        pattern ^ self.flip_pattern[flip_bit as usize]
     }
-
     fn convert(&self, pattern: usize) -> usize {
         assert!((pattern >> self.len).count_ones() == 0);
         let mut result = 0;
@@ -552,6 +696,100 @@ pub mod test {
             x ^= 0b1 << i;
         }
         x
+    }
+    #[test]
+    fn flip_test() {
+        let pattern = 0b0111000;
+        let conv = IntersectPattern::new(pattern, 7);
+        let current = 0b000;
+        assert_eq!(conv.flip_from(current, 1), current);
+        assert_eq!(conv.flip_from(current, 2), current);
+        assert_eq!(conv.flip_from(current, 3), current);
+        assert_eq!(conv.flip_from(current, 4), 0b001);
+        assert_eq!(conv.flip_from(current, 7), 0b111);
+        assert_eq!(conv.flip_from_fast(current, 1), current);
+        assert_eq!(conv.flip_from_fast(current, 2), current);
+        assert_eq!(conv.flip_from_fast(current, 3), current);
+        assert_eq!(conv.flip_from_fast(current, 4), 0b001);
+        assert_eq!(conv.flip_from_fast(current, 7), 0b111);
+    }
+    #[test]
+    fn get_flip_pattern_test() {
+        let position = vec![0, 1, 2, 3, 4];
+        assert_eq!(
+            get_flip_pattern(&position),
+            vec![0, 0b1, 0b11, 0b111, 0b1111, 0b11111]
+        );
+        let position = vec![0, 1, 3, 5, 6];
+        let answer = vec![
+            0,
+            0b0_000_001,
+            0b0_000_011,
+            0b0_001_011,
+            0b0_101_011,
+            0b1_101_011,
+        ];
+        assert_eq!(get_flip_pattern(&position), answer);
+    }
+    #[test]
+    fn get_select_array_test() {
+        let current = PathSet::new(vec![0, 1, 2, 3]);
+        let next = PathSet::new(vec![1, 2, 3, 7]);
+        let (free, fat) = get_select_array(&current, &next);
+        assert_eq!(free, vec![0]);
+        assert_eq!(fat, vec![1, 2, 3]);
+        let current = PathSet::new(vec![1, 2, 4, 6, 7]);
+        let next = PathSet::new(vec![2, 3, 4, 8]);
+        let (free, fat) = get_select_array(&current, &next);
+        assert_eq!(free, vec![0, 3, 4]);
+        assert_eq!(fat, vec![1, 2]);
+    }
+    #[test]
+    fn get_expanded_next_patterns_test() {
+        let current = PathSet::new(vec![0, 1, 2, 3]);
+        let next = PathSet::new(vec![1, 2, 3, 4]);
+        let (_, fat) = get_select_array(&current, &next);
+        let pats = get_expanded_next_patterns(&fat);
+        let answer = vec![
+            0b0000, 0b0010, 0b0100, 0b0110, 0b1000, 0b1010, 0b1100, 0b1110,
+        ];
+        assert_eq!(pats, answer);
+        let current = PathSet::new(vec![1, 2, 4, 6, 7]);
+        let next = PathSet::new(vec![2, 6]);
+        let (_, fat) = get_select_array(&current, &next);
+        let pats = get_expanded_next_patterns(&fat);
+        let answer = vec![0b00_000, 0b00_010, 0b01_000, 0b01_010];
+        assert_eq!(pats, answer);
+    }
+    #[test]
+    fn get_node_flip_pattern_test() {
+        let current = PathSet::new(vec![0, 1, 2, 3, 4]);
+        let next = PathSet::new(vec![1, 2, 3, 4, 5]);
+        let node = PathSet::new(vec![3, 4]);
+        let pattern = get_node_flip_pattern(&current, &next, &node);
+        let answer = vec![0, 0b0];
+        assert_eq!(pattern, answer);
+        let current = PathSet::new(vec![0, 1, 2, 3, 4]);
+        let next = PathSet::new(vec![1, 2, 3, 4, 5]);
+        let node = PathSet::new(vec![0, 2, 4]);
+        let pattern = get_node_flip_pattern(&current, &next, &node);
+        let answer = vec![0, 0b001];
+        assert_eq!(pattern, answer);
+        let current = PathSet::new(vec![0, 1, 3, 5, 6, 7]);
+        let next = PathSet::new(vec![1, 3]);
+        let node = PathSet::new(vec![0, 1, 5]);
+        let pattern = get_node_flip_pattern(&current, &next, &node);
+        let answer = vec![0, 0b001, 0b101, 0b101, 0b101];
+        assert_eq!(pattern, answer);
+    }
+    #[test]
+    fn get_prev_flip_pattern_test() {
+        let prev = PathSet::new(vec![0, 1, 2, 3]);
+        let current = PathSet::new(vec![1, 2, 3, 4]);
+        let next = PathSet::new(vec![4, 5, 6]);
+        let pattern = get_prev_flip_pattern(&current, &next, &prev);
+        let answer = vec![0, 0b001, 0b011, 0b111];
+        assert_eq!(answer, pattern);
     }
     #[test]
     fn bit_flip_test() {

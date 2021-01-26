@@ -327,7 +327,7 @@ mod test {
             .collect()
     }
     #[test]
-    fn phase_test_random_linear() {
+    fn phase_test_random_linear_noerror() {
         let template1: Vec<_> = (0..10).map(|x| (x, 0)).collect();
         let template2: Vec<_> = (0..10).map(|x| (x, 1)).collect();
         let min_len = 3;
