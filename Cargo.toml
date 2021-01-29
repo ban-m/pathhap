@@ -14,3 +14,4 @@ env_logger = "*"
 rayon = "*"
 rand = "*"
 rand_xoshiro = "*"
+histgram_viz = {git = "https://github.com/ban-m/histgram_viz", branch = "master"}

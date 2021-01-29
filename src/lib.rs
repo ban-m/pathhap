@@ -9,12 +9,12 @@
 //! 4. It solves path clustering problem incrementaly.
 //! 5. It predicts the clustering of discarded reads.
 use log::*;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
+mod clustering;
 pub mod em_progressive;
-mod exact_phase;
 mod find_union;
-pub use exact_phase::haplotype_cc;
-pub use exact_phase::phase_cc;
+pub use clustering::haplotype_cc;
+pub use clustering::phase_cc;
 /// Phasing API.
 /// Phase given paths into two haplotypes.
 /// # Example
@@ -60,9 +60,17 @@ pub use exact_phase::phase_cc;
 ///     ]
 /// );
 pub fn phase(paths: &[(String, Vec<(u64, u64)>)], max_occ: usize) -> HashMap<&str, u8> {
+    phase_with_lk(paths, max_occ).1
+}
+
+pub fn phase_with_lk(
+    paths: &[(String, Vec<(u64, u64)>)],
+    max_occ: usize,
+) -> (f64, HashMap<&str, u8>) {
     // First, decompose into each connected component.
     // let mut rng: Xoshiro128StarStar = SeedableRng::seed_from_u64(seed);
     // use rand::seq::SliceRandom;
+    debug!("Begin");
     let components = split_paths(paths);
     debug!("NumOfCC\t{}", components.len());
     let mut total_lk = 0.;
@@ -86,7 +94,7 @@ pub fn phase(paths: &[(String, Vec<(u64, u64)>)], max_occ: usize) -> HashMap<&st
             acc
         });
     debug!("Total log likelihood:{:.3}", total_lk);
-    phasing
+    (total_lk, phasing)
 }
 
 pub fn haplotyping(
@@ -139,15 +147,15 @@ pub fn haplotyping(
 type PathWithID = (String, Vec<(u64, u64)>);
 fn split_paths(paths: &[PathWithID]) -> Vec<Vec<&PathWithID>> {
     let mut fu = find_union::FindUnion::new(paths.len());
-    let path_sketch: Vec<HashSet<_>> = paths
-        .iter()
-        .map(|p| p.1.iter().map(|x| x.0).collect())
-        .collect();
-    for (idx, p1) in path_sketch.iter().enumerate() {
-        for (jdx, p2) in path_sketch.iter().enumerate().skip(idx + 1) {
-            if !p1.is_disjoint(p2) {
-                fu.unite(idx, jdx);
-            }
+    let mut path_on_nodes: HashMap<_, Vec<usize>> = HashMap::new();
+    for (idx, (_, path)) in paths.iter().enumerate() {
+        for &(n, _) in path.iter() {
+            path_on_nodes.entry(n).or_default().push(idx);
+        }
+    }
+    for indices in path_on_nodes.values() {
+        for pair in indices.windows(2) {
+            fu.unite(pair[0], pair[1]).unwrap();
         }
     }
     let mut cluster = vec![];

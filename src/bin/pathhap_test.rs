@@ -1,3 +1,4 @@
+use log::debug;
 use rand::seq::SliceRandom;
 use rand::{Rng, SeedableRng};
 use rand_xoshiro::Xoroshiro128PlusPlus;
@@ -24,7 +25,9 @@ fn main() {
                 (read_num, min_length, max_length, error_rate),
                 seed,
             );
-            (std::time::Instant::now() - start).as_millis()
+            let ti = (std::time::Instant::now() - start).as_millis();
+            println!("{}", ti);
+            ti
         })
         .collect();
     let mean = elapsed.iter().sum::<u128>() as f64 / iteration as f64;
@@ -39,6 +42,7 @@ fn test(
     (read_num, min_length, max_length, error_rate): (usize, usize, usize, f64),
     seed: u64,
 ) {
+    debug!("Start Test module");
     let mut rng: Xoroshiro128PlusPlus = SeedableRng::seed_from_u64(seed);
     let mut counter: HashMap<_, u64> = HashMap::new();
     // (UnitID, OccurenceesSoFar).
@@ -97,7 +101,8 @@ fn test(
         })
         .collect();
     // eprintln!("hap2:{:?}", hap2);
-    let reads: Vec<_> = (0..read_num)
+    debug!("Sim reads.");
+    let mut reads: Vec<_> = (0..read_num)
         .map(|x| {
             let id = format!("{}", x);
             let hap = if 2 * x / read_num == 0 { &hap1 } else { &hap2 };
@@ -105,16 +110,17 @@ fn test(
             (id, path)
         })
         .collect();
-    let result = path_phasing::phase(&reads, 25);
+    reads.shuffle(&mut rng);
+    let result = path_phasing::phase(&reads, 22);
     let hap1 = result.get(&"0");
     let hap2_id = format!("{}", read_num - 1);
     let hap2 = result.get(hap2_id.as_str());
     let errors = reads
         .iter()
-        .enumerate()
-        .filter(|(i, (id, _))| {
+        .filter(|(id, _)| {
             assert!(result.contains_key(id.as_str()), "{}", id);
             let pred = result.get(id.as_str());
+            let i = id.parse::<usize>().unwrap();
             let answer = if 2 * i / read_num == 0 { hap1 } else { hap2 };
             match answer != pred {
                 true => true,

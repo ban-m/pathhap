@@ -29,7 +29,6 @@ pub fn determine_traversal_order(num_of_nodes: usize, paths: &[Vec<(usize, usize
         })
         .collect();
     traverse_graph(num_of_nodes, &edges)
-    //bfs(num_of_nodes, &edges)
 }
 
 // Traverse graph so that the maximum number of the boundary would be as small as possible.
@@ -183,23 +182,51 @@ fn bfs(num_of_nodes: usize, edges: &[Vec<usize>]) -> Vec<usize> {
 }
 
 pub fn get_boundary_nodes_on(order: &[usize], paths: &[(usize, &[(usize, usize)])]) -> Vec<Nodes> {
-    let edges: HashSet<(usize, usize)> = {
-        let mut edges = HashSet::new();
+    let edges: Vec<_> = {
+        let max_num = paths
+            .iter()
+            .flat_map(|(_, x)| x.iter().map(|x| x.0))
+            .max()
+            .unwrap();
+        let mut edges = vec![HashSet::new(); max_num + 1];
         for (_, path) in paths.iter() {
             for w in path.windows(2) {
-                edges.insert((w[0].0, w[1].0));
+                edges[w[0].0].insert(w[1].0);
+                edges[w[1].0].insert(w[0].0);
             }
         }
         edges
     };
-    (0..order.len())
-        .map(|i| get_boundary_nodes(&paths, &order, i, &edges))
+    let mut active_nodes: HashSet<usize> = HashSet::new();
+    let mut arrived_nodes: HashSet<usize> = HashSet::new();
+    order
+        .iter()
+        .map(|&focal| {
+            arrived_nodes.insert(focal);
+            active_nodes.retain(|&n| edges[n].iter().any(|x| !arrived_nodes.contains(x)));
+            active_nodes.insert(focal);
+            let nodes = active_nodes.clone();
+            Nodes { nodes }
+        })
         .collect()
+    // let edges: HashSet<(usize, usize)> = {
+    //     let mut edges = HashSet::new();
+    //     for (_, path) in paths.iter() {
+    //         for w in path.windows(2) {
+    //             edges.insert((w[0].0, w[1].0));
+    //         }
+    //     }
+    //     edges
+    // };
+    // (0..order.len())
+    //     .map(|i| get_boundary_nodes(&paths, &order, i, &edges))
+    //     .collect()
 }
 
 // Take P={p_1,..,p_n}, V={v_1, ...,v_m}, i, and edges E, then
 // let U = {v_1,..., v_i} and return
 // D(U) = {v_i} + {u \in U | there is some node w not in U such that (w,u) \in E }
+#[allow(dead_code)]
 pub fn get_boundary_nodes(
     _paths: &[(usize, &[(usize, usize)])],
     order: &[usize],

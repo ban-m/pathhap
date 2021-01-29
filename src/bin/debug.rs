@@ -40,13 +40,30 @@ fn sim_path_error<R: Rng>(
 
 fn main() {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("debug")).init();
-    let template1: Vec<_> = (0..10).map(|x| (x, 0)).collect();
-    let template2: Vec<_> = (0..10).map(|x| (x, 1)).collect();
-    let cluster_num: HashMap<u64, u64> = (0..10).map(|x| (x, 2)).collect();
+    let template = vec![
+        0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 2, 3, 4, 5, 6, 11, 12, 13, 14, 15,
+    ];
+    let mut cluster_num: HashMap<_, _> = HashMap::new();
+    let template1: Vec<_> = template
+        .iter()
+        .map(|&x| {
+            let c = cluster_num.entry(x).or_default();
+            *c += 1;
+            (x, *c - 1)
+        })
+        .collect();
+    let template2: Vec<_> = template
+        .iter()
+        .map(|&x| {
+            let c = cluster_num.entry(x).or_default();
+            *c += 1;
+            (x, *c - 1)
+        })
+        .collect();
     let min_len = 3;
     let max_len = 6;
-    let err = 0.1;
-    let path_num = 10;
+    let err = 0.2;
+    let path_num = 100;
     let mut rng: Xoshiro256PlusPlus = SeedableRng::seed_from_u64(34089);
     let mut paths: Vec<_> = (0..path_num)
         .map(|i| {
@@ -62,17 +79,20 @@ fn main() {
         debug!("{}\t{:?}", i, p);
     }
     paths.shuffle(&mut rng);
-    let result = path_phasing::haplotyping(&paths, 20, 0.05);
+    let (_, result) = path_phasing::phase_with_lk(&paths, 20);
     let cluster1 = *result.get("0").unwrap();
     let cluster2: String = format!("{}", path_num - 1);
     let cluster2 = *result.get(cluster2.as_str()).unwrap();
     assert_ne!(cluster1, cluster2);
-    for i in 0..path_num {
-        let id: String = format!("{}", i);
-        if i < path_num / 2 {
-            assert_eq!(cluster1, result[id.as_str()]);
-        } else {
-            assert_eq!(cluster2, result[id.as_str()]);
-        }
-    }
+    let error = (0..path_num)
+        .filter(|&i| {
+            let id: String = format!("{}", i);
+            if i < path_num / 2 {
+                cluster1 != result[id.as_str()]
+            } else {
+                cluster2 != result[id.as_str()]
+            }
+        })
+        .count();
+    println!("{}", error);
 }

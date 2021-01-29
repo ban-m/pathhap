@@ -1,9 +1,10 @@
 //! phasing module by GraphWhatsHap.
 use super::graph_traversal::*;
 use super::model;
-use log::{debug, error, info};
+use log::{debug, error};
 use rayon::prelude::*;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
+mod xlogx;
 // Phaing connected components.
 pub fn phase_cc(paths: &[Vec<(usize, usize)>], max_occ: usize) -> Vec<u8> {
     // Convert paths into paths with ID.
@@ -13,7 +14,15 @@ pub fn phase_cc(paths: &[Vec<(usize, usize)>], max_occ: usize) -> Vec<u8> {
     // BFS to determine the
     // CAUSION: ARRAYS SHOULD BE ALIGNED W.R.T BFS ORDER!
     let node_traverse_order = determine_traversal_order(num_of_nodes, paths);
+    let start = std::time::Instant::now();
     let (path_to_be_used, path_unused) = downsampling_up_to(&node_traverse_order, paths, max_occ);
+    let end = std::time::Instant::now();
+    debug!(
+        "Removed:Remains={}:{}({}ms)",
+        path_unused.len(),
+        path_to_be_used.len(),
+        (end - start).as_millis()
+    );
     let node_paths: Vec<_> = node_traverse_order
         .iter()
         .map(|&n| get_paths_on(&path_to_be_used, &Nodes::new(&[n])))
@@ -23,12 +32,10 @@ pub fn phase_cc(paths: &[Vec<(usize, usize)>], max_occ: usize) -> Vec<u8> {
         .iter()
         .map(|bn| get_paths_on(&path_to_be_used, bn))
         .collect();
-    debug!(
-        "Removed:Remaines={}:{}",
-        path_unused.len(),
-        path_to_be_used.len()
-    );
     (0..num_of_nodes).for_each(|i| assert!(boundary_nodes[i].contains(&node_traverse_order[i])));
+    // for bp in boundary_paths.iter() {
+    //     assert!(bp.len() <= max_occ, "{:?},{}", bp, bp.len());
+    // }
     let mut result = exact_phase(
         num_of_nodes,
         &path_to_be_used,
@@ -61,34 +68,26 @@ fn downsampling_up_to<'a>(
     paths: &'a [Vec<(usize, usize)>],
     max_occ: usize,
 ) -> (Vec<PathWithID<'a>>, Vec<PathWithID<'a>>) {
-    let mut reads_to_be_used: Vec<_> = paths.iter().map(|p| p.as_slice()).enumerate().collect();
-    reads_to_be_used.sort_by_key(|x| x.1.len());
-    let boundary_nodes = get_boundary_nodes_on(&order, &reads_to_be_used);
-    for (i, ns) in boundary_nodes.iter().enumerate() {
-        debug!("D\t{}\t{}", i, ns.len());
+    debug!("Sorting reads.");
+    let num_of_nodes = super::graph_traversal::number_of_nodes(&paths);
+    let mut reads_unused: Vec<_> = paths.iter().map(|p| p.as_slice()).enumerate().collect();
+    let mut reads_to_be_used = vec![];
+    reads_unused.sort_by(|(_, x), (_, y)| x.len().cmp(&y.len()).reverse());
+    let boundary_nodes = get_boundary_nodes_on(&order, &reads_unused);
+    for (n, bn) in boundary_nodes.iter().enumerate() {
+        debug!("{}\t{}", n, bn.len());
     }
+    debug!("Start Downsampling");
+    debug!("Target coverage:{}", max_occ);
     let boundary_path_ids: Vec<Vec<usize>> = boundary_nodes
         .iter()
-        .map(|bn| get_paths_on(&reads_to_be_used, bn))
-        .map(|indices| indices.iter().map(|&i| reads_to_be_used[i].0).collect())
+        .map(|bn| get_paths_on(&reads_unused, bn))
+        .map(|indices| indices.iter().map(|&i| reads_unused[i].0).collect())
         .collect();
-    let mut reads_unused = vec![];
-    let mut node_counts: HashMap<usize, u32> = HashMap::new();
-    for path in paths.iter() {
-        for &(n, _) in path {
-            *node_counts.entry(n).or_default() += 1;
-        }
-    }
-    {
-        let mut node_counts: Vec<_> = node_counts.iter().collect();
-        node_counts.sort();
-        for (n, val) in node_counts {
-            debug!("BEFORE\t{}\t{}", n, val);
-        }
-    }
+    let mut node_counts: Vec<_> = vec![0; num_of_nodes];
     // ReadID => Boundary ID.
     let reverse_index = {
-        let mut reverse_index = vec![vec![]; reads_to_be_used.len()];
+        let mut reverse_index = vec![vec![]; reads_unused.len()];
         for (i, ids) in boundary_path_ids.iter().enumerate() {
             for &id in ids.iter() {
                 reverse_index[id].push(i);
@@ -96,67 +95,119 @@ fn downsampling_up_to<'a>(
         }
         reverse_index
     };
-    let mut boundary_path_number: Vec<_> = boundary_path_ids.iter().map(|x| x.len()).collect();
+    let mut boundary_path_number: Vec<_> = vec![0; boundary_nodes.len()];
     loop {
-        let next_remove_probe = {
-            let mut excess_boundary: Vec<_> = boundary_path_number
-                .iter()
-                .enumerate()
-                .filter(|&(_, &occ)| occ > max_occ)
-                .collect();
-            excess_boundary.sort_by_key(|x| x.1);
-            // IS THIS...?
-            excess_boundary.reverse();
-            excess_boundary
-                .into_iter()
-                .filter_map(|(idx, _)| {
-                    let rm_id = reads_to_be_used
-                        .iter()
-                        .map(|&(id, path)| {
-                            let min_occ_along = path
-                                .iter()
-                                .filter_map(|&(n, _)| node_counts.get(&n))
-                                .min()
-                                .unwrap();
-                            let is_ok = reverse_index[id].contains(&idx);
-                            (min_occ_along, is_ok)
-                        })
-                        .enumerate()
-                        .filter(|&(_, (&min_occ, is_ok))| min_occ > 1 && is_ok)
-                        .max_by_key(|(_, x)| x.0)
-                        .map(|x| x.0);
-                    match rm_id {
-                        Some(idx) => Some(reads_to_be_used.remove(idx)),
-                        None => None,
-                    }
-                })
-                .next()
-        };
-        let (removed_path_id, removed_path) = match next_remove_probe {
-            Some(res) => res,
+        let next_cand = get_next_candidate(
+            &boundary_path_number,
+            &node_counts,
+            &reads_unused,
+            &reverse_index,
+            max_occ,
+        );
+        let (removed_path_id, removed_path) = match next_cand {
+            Some(idx) => reads_unused.remove(idx),
             None => break,
         };
         for &b in reverse_index[removed_path_id].iter() {
-            boundary_path_number[b] -= 1;
+            boundary_path_number[b] += 1;
         }
         for (n, _) in removed_path.iter() {
-            *node_counts.get_mut(n).unwrap() -= 1;
+            node_counts[*n] += 1;
         }
-        reads_unused.push((removed_path_id, removed_path));
+        reads_to_be_used.push((removed_path_id, removed_path))
     }
-    // Dump metrics from here to....
-    {
-        for (i, n) in boundary_path_number.iter().enumerate() {
-            debug!("{}\t{}", i, n);
+    // Rescue reads.
+    // Minimum occurence:4.
+    reads_unused.reverse();
+    while let Some((node, pos)) = get_rescued_path(&node_counts, &reads_unused, 4) {
+        let (removed_path_id, removed_path) = reads_unused.remove(pos);
+        for &b in reverse_index[removed_path_id].iter() {
+            boundary_path_number[b] += 1;
         }
-        let mut node_counts: Vec<_> = node_counts.iter().collect();
-        node_counts.sort();
-        for (n, val) in node_counts {
-            debug!("AFTER\t{}\t{}", n, val);
+        for (n, _) in removed_path.iter() {
+            node_counts[*n] += 1;
+        }
+        let removed_path = cut_path_contains(node, &removed_path);
+        reads_to_be_used.push((removed_path_id, removed_path))
+    }
+    for (i, n) in boundary_path_number.iter().enumerate() {
+        debug!("BOUND\t{}\t{}", i, n);
+    }
+    for (n, val) in node_counts.iter().enumerate() {
+        debug!("NODE\t{}\t{}", n, val);
+    }
+    for (node, _) in node_counts.iter().enumerate() {
+        if reads_to_be_used
+            .iter()
+            .all(|(_, path)| path.iter().all(|&(n, _)| n != node))
+        {
+            for (_, p) in reads_to_be_used.iter() {
+                error!("{:?}", p);
+            }
+            error!("Node {} never appears in the dataset.", node);
+            error!("Please set more large value for maximum coverage.");
+            error!("Current:{}", max_occ);
+            panic!()
         }
     }
-    // Here.
     (reads_to_be_used, reads_unused)
+}
+
+fn get_next_candidate(
+    boundary_path_number: &[usize],
+    node_counts: &[usize],
+    paths: &[(usize, &[(usize, usize)])],
+    reverse_index: &[Vec<usize>],
+    max_occ: usize,
+) -> Option<usize> {
+    let mut node_counts: Vec<_> = node_counts.iter().enumerate().collect();
+    node_counts.sort_by_key(|x| x.1);
+    node_counts.iter().find_map(|&(node, _)| {
+        paths.iter().position(|&(id, path)| {
+            path.iter().any(|&(n, _)| n == node)
+                && reverse_index[id]
+                    .iter()
+                    .all(|&b_id| boundary_path_number[b_id] < max_occ)
+        })
+    })
+}
+
+fn get_rescued_path(
+    node_counts: &[usize],
+    paths: &[(usize, &[(usize, usize)])],
+    min_occ: usize,
+) -> Option<(usize, usize)> {
+    let mut node_counts: Vec<_> = node_counts
+        .iter()
+        .enumerate()
+        .filter(|&(_, &occ)| occ < min_occ)
+        .collect();
+    node_counts.sort_by_key(|x| x.1);
+    node_counts.reverse();
+    node_counts
+        .iter()
+        .filter(|&(_, &occ)| occ < min_occ)
+        .find_map(|&(node, _)| {
+            paths
+                .iter()
+                .position(|&(_, path)| path.iter().any(|&(n, _)| n == node))
+                .map(|p| (node, p))
+        })
+}
+
+fn cut_path_contains(node: usize, path: &[(usize, usize)]) -> &[(usize, usize)] {
+    if path.len() <= 3 {
+        path
+    } else {
+        let position = path.iter().position(|&(n, _)| n == node).unwrap();
+        if position == 0 {
+            &path[..3]
+        } else if position == path.len() - 1 {
+            &path[path.len() - 2..]
+        } else {
+            &path[position - 1..position + 1]
+        }
+    }
 }
 
 fn get_paths_on(paths: &[(usize, &[(usize, usize)])], nodes: &Nodes) -> PathSet {
@@ -175,44 +226,63 @@ fn exact_phase(
     paths: &[(usize, &[(usize, usize)])],
     order: &[usize],
     node_paths: &[PathSet],
-    boundary_nodes: &[Nodes],
+    _boundary_nodes: &[Nodes],
     boundary_paths: &[PathSet],
 ) -> Vec<(usize, u8)> {
     assert_eq!(num_of_nodes, boundary_paths.len());
     // Strip ids from paths.
+    use histgram_viz::Histgram;
     debug!("Begin");
-    for (idx, (id, p)) in paths.iter().enumerate() {
-        debug!("Path:{}\t{}\t{:?}", idx, id, p);
+    if log::log_enabled!(log::Level::Debug) {
+        let lens: Vec<_> = paths.iter().map(|x| x.1.len()).collect();
+        let hist = Histgram::new(&lens);
+        eprintln!("{}", hist.format(20, 20));
     }
-    for (i, (((br, bn), nr), on)) in boundary_paths
-        .iter()
-        .zip(boundary_nodes.iter())
-        .zip(node_paths.iter())
-        .zip(order.iter())
-        .enumerate()
-    {
-        debug!("{}\t{:?}\t{:?}\t{:?}\t{}", i, br, bn, nr, on);
-    }
+    // for (idx, (id, p)) in paths.iter().enumerate() {
+    //     debug!("Path:{}\t{}\t{:?}", idx, id, p);
+    // }
+    // for (i, (((br, bn), nr), on)) in boundary_paths
+    //     .iter()
+    //     .zip(boundary_nodes.iter())
+    //     .zip(node_paths.iter())
+    //     .zip(order.iter())
+    //     .enumerate()
+    // {
+    //     debug!("{}\t{:?}\t{:?}\t{:?}\t{}", i, br, bn, nr, on);
+    // }
     // calculate each bipartition on each nodes.
+    let start = std::time::Instant::now();
     let ls_node: Vec<Vec<_>> = order
         .par_iter()
         .zip(node_paths.par_iter())
         .map(|(&node, paths_on_node)| enumerate_all_bipartition(&paths, paths_on_node, node))
         .collect();
+    eprintln!("DUMP\tNode\tPattern\tLK");
+    for (n, ls) in order.iter().zip(ls_node.iter()) {
+        for (p, x) in ls.iter().enumerate() {
+            eprintln!("DUMP\t{}\t{}\t{}", n, p, x);
+        }
+    }
     assert!(ls_node.iter().all(|xs| xs.iter().all(|&x| x < 0.000001)));
+    let end = std::time::Instant::now();
+    debug!("Precompute partitions:{}ms", (end - start).as_millis());
     let (mut ls_hat, mut ls_hat_arg) = (vec![], vec![]);
     let start = std::time::Instant::now();
+    debug!("Marging matrices.");
+    eprintln!("PATSCORE\tNode\tPat\tLK");
     for (i, ls_node) in ls_node.iter().enumerate() {
-        debug!("Computing \\hat{{L}}[{}] from previous \\hat{{L}}", i);
+        // debug!("Computing \\hat{{L}}[{}] from previous \\hat{{L}}", i);
         let (ls_hat_next, ls_hat_arg_next) = match rayon::current_num_threads() {
             1 => fill_next_ls(&boundary_paths, i, &node_paths[i], ls_node, &ls_hat),
             _ => fill_next_ls_par(&boundary_paths, i, &node_paths[i], ls_node, &ls_hat),
-            //_ => fill_next_ls(&boundary_paths, i, &node_paths[i], ls_node, &ls_hat),
         };
         ls_hat = ls_hat_next;
         ls_hat_arg.push(ls_hat_arg_next);
+        for (pat, lk) in ls_hat.iter().enumerate() {
+            eprintln!("PATSCORE\t{}\t{}\t{}", i, pat, lk);
+        }
     }
-    info!("GHap:{}", (std::time::Instant::now() - start).as_millis());
+    debug!("GHap:{}", (std::time::Instant::now() - start).as_millis());
     // Traceback.
     let (argmax, ls_max) = ls_hat_arg
         .pop()
@@ -237,12 +307,12 @@ fn exact_phase(
         let converter = boundary_paths[current_index]
             .get_intersection_pattern(&boundary_paths[current_index - 1]);
         let prev_argmax = ls_hat_arg[current_index - 1][converter.convert(current_partition)];
-        debug!(
-            "Best R(D_{}) = [{:?}] partition = {:b}",
-            current_index - 1,
-            boundary_paths[current_index - 1],
-            prev_argmax,
-        );
+        // debug!(
+        //     "Best R(D_{}) = [{:?}] partition = {:b}",
+        //     current_index - 1,
+        //     boundary_paths[current_index - 1],
+        //     prev_argmax,
+        // );
         // Decompose this partition.
         for (i, &r) in boundary_paths[current_index - 1].iter().enumerate() {
             match (prev_argmax >> i) & 1 == 0 {
@@ -253,12 +323,15 @@ fn exact_phase(
         current_partition = prev_argmax;
         current_index -= 1;
     }
-    debug!("HAP\tHAPID\tReadID\tRead");
-    for &r in hap1.iter() {
-        debug!("HAP\t0\t{}\t{:?}", r, paths[r]);
-    }
-    for &r in hap2.iter() {
-        debug!("HAP\t1\t{}\t{:?}", r, paths[r]);
+    if log::log_enabled!(log::Level::Trace) {
+        use log::trace;
+        trace!("HAP\tHAPID\tReadID\tRead");
+        for &r in hap1.iter() {
+            trace!("HAP\t0\t{}\t{:?}", r, paths[r]);
+        }
+        for &r in hap2.iter() {
+            trace!("HAP\t1\t{}\t{:?}", r, paths[r]);
+        }
     }
     assert!(hap1.is_disjoint(&hap2));
     hap1.into_iter()
@@ -536,10 +609,13 @@ fn enumerate_all_bipartition(
         })
         .collect();
     let cluster_num = paths.iter().filter_map(|cs| cs.iter().max()).max().unwrap() + 1;
-    let mut bi_counts = [vec![0u32; cluster_num], vec![0u32; cluster_num]];
+    // let mut bi_counts = [vec![0u32; cluster_num], vec![0u32; cluster_num]];
+    let mut bi_counts = vec![0usize; cluster_num * 2];
     for &c in paths.iter().flat_map(|x| x) {
-        bi_counts[0][c] += 1;
+        bi_counts[c] += 1;
     }
+    // Note: sum_i u_i*ln(u_i/T) = sum_i u_i*ln(u_i) - u_i*ln(T) = sum_i u_i*ln(u_i) - T*ln(T)
+    let mut counts = [bi_counts.iter().sum::<usize>(), 0];
     (0..1 << path_number)
         .map(|pattern: usize| {
             if pattern != 0 {
@@ -547,28 +623,26 @@ fn enumerate_all_bipartition(
                 for (i, path) in paths.iter().take(flip_path as usize).enumerate() {
                     let next_bucket = (pattern >> i) & 0b1;
                     let prev_bucket = next_bucket ^ 0b1;
+                    counts[prev_bucket] -= path.len();
+                    counts[next_bucket] += path.len();
+                    let prev_bucket = prev_bucket * cluster_num;
+                    let next_bucket = next_bucket * cluster_num;
                     // Remove from previous bucket, add to next bucket.
                     for &c in path {
-                        bi_counts[prev_bucket][c] -= 1;
-                        bi_counts[next_bucket][c] += 1;
+                        bi_counts[prev_bucket + c] -= 1;
+                        bi_counts[next_bucket + c] += 1;
                     }
                 }
             }
-            // Note: sum_i u_i*ln(u_i/T) = sum_i u_i*ln(u_i) - u_i*ln(T) = sum_i u_i*ln(u_i) - T*ln(T)
-            let log_likelihood = bi_counts
-                .iter()
-                .map(|xs| xs.iter().copied().map(xlnx).sum::<f64>())
-                .sum::<f64>();
-            let s_num: u32 = bi_counts[0].iter().sum::<_>();
-            let t_num: u32 = bi_counts[1].iter().sum::<_>();
-            let lk = log_likelihood - xlnx(s_num) - xlnx(t_num);
-            lk
+            let log_likelihood = bi_counts.iter().map(|&x| xlogx::XLOGX[x]).sum::<f64>();
+            log_likelihood - xlogx::XLOGX[counts[0]] - xlogx::XLOGX[counts[1]]
         })
         .collect()
 }
 
 // Return xlog_e(x). If x==0, return 0.
-fn xlnx(x: u32) -> f64 {
+#[allow(dead_code)]
+fn xlnx(&x: &usize) -> f64 {
     if x == 0 {
         0.
     } else {

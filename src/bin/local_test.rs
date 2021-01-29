@@ -6,10 +6,10 @@ fn main() {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
     // Parameters.
     let template_length = 200;
-    let duplication_rate = 0.001;
-    let hap_dup_rate = 0.001;
-    let hap_ins_rate = 0.001;
-    let hap_del_rate = 0.001;
+    let duplication_rate = 0.05;
+    let hap_dup_rate = 0.0;
+    let hap_ins_rate = 0.01;
+    let hap_del_rate = 0.01;
     let read_num = 1000;
     let min_length = 3;
     let max_length = 6;
@@ -47,7 +47,7 @@ fn test(
             }
         })
         .collect();
-    // eprintln!("{:?}", template);
+    eprintln!("{:?}", template);
     // Let's make diploids.
     let hap1: Vec<_> = template
         .iter()
@@ -96,7 +96,6 @@ fn test(
         })
         .collect();
     reads.shuffle(&mut rng);
-    // let result = path_phasing::haplotyping(&reads, 25, 0.05);
     let start = std::time::Instant::now();
     let result = path_phasing::phase(&reads, 20);
     eprintln!("{:?}", (std::time::Instant::now() - start).as_millis());
@@ -118,7 +117,7 @@ fn test(
         .count();
     let error_rate = errors as f64 / (reads.len() as f64);
     eprintln!("Error Rate:{:?}", error_rate);
-    assert!(error_rate < 0.05);
+    assert!(error_rate < 0.10);
 }
 
 fn sim_read<R: Rng>(
