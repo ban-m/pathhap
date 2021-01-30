@@ -79,7 +79,7 @@ fn main() {
         debug!("{}\t{:?}", i, p);
     }
     paths.shuffle(&mut rng);
-    let (_, result) = path_phasing::phase_with_lk(&paths, 20);
+    let (_, result) = path_phasing::phase_with_lk(&paths, 20, None);
     let cluster1 = *result.get("0").unwrap();
     let cluster2: String = format!("{}", path_num - 1);
     let cluster2 = *result.get(cluster2.as_str()).unwrap();

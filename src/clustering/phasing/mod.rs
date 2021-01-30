@@ -1,12 +1,19 @@
 //! phasing module by GraphWhatsHap.
 use super::graph_traversal::*;
 use super::model;
-use log::{debug, error};
+use log::{debug, error, trace};
 use rayon::prelude::*;
 use std::collections::HashSet;
 mod xlogx;
+// use std::collections::BTreeMap;
+// use std::collections::HashMap;
 // Phaing connected components.
-pub fn phase_cc(paths: &[Vec<(usize, usize)>], max_occ: usize) -> Vec<u8> {
+pub fn phase_cc(
+    paths: &[Vec<(usize, usize)>],
+    max_occ: usize,
+    subsample_size: Option<usize>,
+) -> Vec<u8> {
+    let min_occ = 6;
     // Convert paths into paths with ID.
     debug!("Start");
     // Construct a graph.
@@ -15,7 +22,8 @@ pub fn phase_cc(paths: &[Vec<(usize, usize)>], max_occ: usize) -> Vec<u8> {
     // CAUSION: ARRAYS SHOULD BE ALIGNED W.R.T BFS ORDER!
     let node_traverse_order = determine_traversal_order(num_of_nodes, paths);
     let start = std::time::Instant::now();
-    let (path_to_be_used, path_unused) = downsampling_up_to(&node_traverse_order, paths, max_occ);
+    let (path_to_be_used, path_unused) =
+        downsampling_up_to(&node_traverse_order, paths, max_occ, min_occ);
     let end = std::time::Instant::now();
     debug!(
         "Removed:Remains={}:{}({}ms)",
@@ -33,24 +41,43 @@ pub fn phase_cc(paths: &[Vec<(usize, usize)>], max_occ: usize) -> Vec<u8> {
         .map(|bn| get_paths_on(&path_to_be_used, bn))
         .collect();
     (0..num_of_nodes).for_each(|i| assert!(boundary_nodes[i].contains(&node_traverse_order[i])));
-    // for bp in boundary_paths.iter() {
-    //     assert!(bp.len() <= max_occ, "{:?},{}", bp, bp.len());
-    // }
-    let mut result = exact_phase(
-        num_of_nodes,
-        &path_to_be_used,
-        &node_traverse_order,
-        &node_paths,
-        &boundary_nodes,
-        &boundary_paths,
-    );
+    for bp in boundary_paths.iter() {
+        if bp.len() <= 60 {
+            error!("{:?},{}", bp, bp.len());
+            error!("The boundary is too large.");
+            error!("Please check input and clean up your paths a little bit.");
+            panic!();
+        }
+    }
+    let result = match subsample_size {
+        None => phase_paths(
+            num_of_nodes,
+            &path_to_be_used,
+            &node_traverse_order,
+            &node_paths,
+            &boundary_paths,
+        ),
+        Some(s) => phase_paths_fast(
+            num_of_nodes,
+            &path_to_be_used,
+            &node_traverse_order,
+            &node_paths,
+            &boundary_paths,
+            s,
+        ),
+    };
     let model = model::Model::new(&path_to_be_used, &result, 0.1);
     debug!("Finished");
     let mut paths_with_id = path_to_be_used;
-    for (idx, path) in path_unused {
-        result.push((idx, model.predict_path(&path)));
-        paths_with_id.push((idx, path));
-    }
+    paths_with_id.extend(path_unused);
+    // for (idx, path) in path_unused {
+    //     result.push((idx, model.predict_path(&path)));
+    //     paths_with_id.push((idx, path));
+    // }
+    let mut result: Vec<_> = paths_with_id
+        .iter()
+        .map(|&(idx, path)| (idx, model.predict_path(&path)))
+        .collect();
     result.sort_by_key(|x| x.0);
     paths_with_id.sort_by_key(|x| x.0);
     {
@@ -67,6 +94,7 @@ fn downsampling_up_to<'a>(
     order: &[usize],
     paths: &'a [Vec<(usize, usize)>],
     max_occ: usize,
+    min_occ: usize,
 ) -> (Vec<PathWithID<'a>>, Vec<PathWithID<'a>>) {
     debug!("Sorting reads.");
     let num_of_nodes = super::graph_traversal::number_of_nodes(&paths);
@@ -117,9 +145,8 @@ fn downsampling_up_to<'a>(
         reads_to_be_used.push((removed_path_id, removed_path))
     }
     // Rescue reads.
-    // Minimum occurence:4.
     reads_unused.reverse();
-    while let Some((node, pos)) = get_rescued_path(&node_counts, &reads_unused, 4) {
+    while let Some((node, pos)) = get_rescued_path(&node_counts, &reads_unused, min_occ) {
         let (removed_path_id, removed_path) = reads_unused.remove(pos);
         for &b in reverse_index[removed_path_id].iter() {
             boundary_path_number[b] += 1;
@@ -220,13 +247,99 @@ fn get_paths_on(paths: &[(usize, &[(usize, usize)])], nodes: &Nodes) -> PathSet 
     PathSet::new(paths)
 }
 
-// Exact phasing.
-fn exact_phase(
+fn phase_paths_fast(
     num_of_nodes: usize,
     paths: &[(usize, &[(usize, usize)])],
     order: &[usize],
     node_paths: &[PathSet],
-    _boundary_nodes: &[Nodes],
+    boundary_paths: &[PathSet],
+    sub: usize,
+) -> Vec<(usize, u8)> {
+    assert_eq!(num_of_nodes, boundary_paths.len());
+    // Strip ids from paths.
+    debug!("Begin");
+    // calculate each bipartition on each nodes.
+    let start = std::time::Instant::now();
+    let ls_node: Vec<Vec<_>> = order
+        .par_iter()
+        .zip(node_paths.par_iter())
+        .map(|(&node, paths_on_node)| enumerate_all_bipartition(&paths, paths_on_node, node))
+        .collect();
+    assert!(ls_node.iter().all(|xs| xs.iter().all(|&x| x < 0.000001)));
+    let end = std::time::Instant::now();
+    debug!("Precompute partitions:{}ms", (end - start).as_millis());
+    let mut ls_hat = vec![];
+    let start = std::time::Instant::now();
+    debug!("Marging matrices.");
+    for (i, ls_node) in ls_node.iter().enumerate() {
+        let last_ls = ls_hat.last();
+        // let start = std::time::Instant::now();
+        let next_ls = fill_next_ls_sub(&boundary_paths, i, &node_paths[i], ls_node, last_ls, sub);
+        ls_hat.push(next_ls);
+        // let end = std::time::Instant::now();
+        // eprintln!("{}\t{}", i, (end - start).as_millis());
+    }
+    debug!("GHap:{}", (std::time::Instant::now() - start).as_millis());
+    // Traceback.
+    //let (argmax, (_, max_lk)) = ls_hat
+    let (argmax, _, max_lk) = ls_hat
+        .pop()
+        .unwrap()
+        .into_iter()
+        .max_by(|a, b| (a.1.partial_cmp(&b.1).unwrap()))
+        //.max_by(|(_, a), (_, b)| (a.0.partial_cmp(&b.0).unwrap()))
+        .unwrap();
+    debug!("Max LK is {:?}, {:?}", max_lk, argmax);
+    let (mut hap1, mut hap2) = (HashSet::new(), HashSet::new());
+    // partition of 0 is the unique partition for the empty set, ((),()).
+    // Current partition is the argmax patition for the R(D(`current_index`)).
+    let (mut current_index, mut current_partition) = (num_of_nodes - 1, argmax);
+    for (i, &r) in boundary_paths[current_index].iter().enumerate() {
+        match (current_partition >> i) & 1 == 0 {
+            true => hap1.insert(r),
+            false => hap2.insert(r),
+        };
+    }
+    while 0 < current_index {
+        let converter = boundary_paths[current_index]
+            .get_intersection_pattern(&boundary_paths[current_index - 1]);
+        let prev_partition = converter.convert(current_partition);
+        let &(_, _, prev_argmax) = ls_hat[current_index - 1]
+            .iter()
+            .find(|&x| x.0 == prev_partition)
+            .unwrap();
+        // let prev_argmax = ls_hat[current_index - 1][&converter.convert(current_partition)].1;
+        for (i, &r) in boundary_paths[current_index - 1].iter().enumerate() {
+            match (prev_argmax >> i) & 1 == 0 {
+                true => hap1.insert(r),
+                false => hap2.insert(r),
+            };
+        }
+        current_partition = prev_argmax;
+        current_index -= 1;
+    }
+    if log::log_enabled!(log::Level::Trace) {
+        trace!("HAP\tHAPID\tReadID\tRead");
+        for &r in hap1.iter() {
+            trace!("HAP\t0\t{}\t{:?}", r, paths[r]);
+        }
+        for &r in hap2.iter() {
+            trace!("HAP\t1\t{}\t{:?}", r, paths[r]);
+        }
+    }
+    assert!(hap1.is_disjoint(&hap2));
+    hap1.into_iter()
+        .map(|r| (paths[r].0, 0))
+        .chain(hap2.into_iter().map(|r| (paths[r].0, 1)))
+        .collect()
+}
+
+// Exact phasing.
+fn phase_paths(
+    num_of_nodes: usize,
+    paths: &[(usize, &[(usize, usize)])],
+    order: &[usize],
+    node_paths: &[PathSet],
     boundary_paths: &[PathSet],
 ) -> Vec<(usize, u8)> {
     assert_eq!(num_of_nodes, boundary_paths.len());
@@ -257,30 +370,18 @@ fn exact_phase(
         .zip(node_paths.par_iter())
         .map(|(&node, paths_on_node)| enumerate_all_bipartition(&paths, paths_on_node, node))
         .collect();
-    eprintln!("DUMP\tNode\tPattern\tLK");
-    for (n, ls) in order.iter().zip(ls_node.iter()) {
-        for (p, x) in ls.iter().enumerate() {
-            eprintln!("DUMP\t{}\t{}\t{}", n, p, x);
-        }
-    }
     assert!(ls_node.iter().all(|xs| xs.iter().all(|&x| x < 0.000001)));
     let end = std::time::Instant::now();
     debug!("Precompute partitions:{}ms", (end - start).as_millis());
     let (mut ls_hat, mut ls_hat_arg) = (vec![], vec![]);
     let start = std::time::Instant::now();
     debug!("Marging matrices.");
-    eprintln!("PATSCORE\tNode\tPat\tLK");
     for (i, ls_node) in ls_node.iter().enumerate() {
         // debug!("Computing \\hat{{L}}[{}] from previous \\hat{{L}}", i);
-        let (ls_hat_next, ls_hat_arg_next) = match rayon::current_num_threads() {
-            1 => fill_next_ls(&boundary_paths, i, &node_paths[i], ls_node, &ls_hat),
-            _ => fill_next_ls_par(&boundary_paths, i, &node_paths[i], ls_node, &ls_hat),
-        };
+        let (ls_hat_next, ls_hat_arg_next) =
+            fill_next_ls_par(&boundary_paths, i, &node_paths[i], ls_node, &ls_hat);
         ls_hat = ls_hat_next;
         ls_hat_arg.push(ls_hat_arg_next);
-        for (pat, lk) in ls_hat.iter().enumerate() {
-            eprintln!("PATSCORE\t{}\t{}\t{}", i, pat, lk);
-        }
     }
     debug!("GHap:{}", (std::time::Instant::now() - start).as_millis());
     // Traceback.
@@ -324,7 +425,6 @@ fn exact_phase(
         current_index -= 1;
     }
     if log::log_enabled!(log::Level::Trace) {
-        use log::trace;
         trace!("HAP\tHAPID\tReadID\tRead");
         for &r in hap1.iter() {
             trace!("HAP\t0\t{}\t{:?}", r, paths[r]);
@@ -340,6 +440,7 @@ fn exact_phase(
         .collect()
 }
 
+#[allow(dead_code)]
 fn fill_next_ls(
     boundary_paths: &[PathSet],
     i: usize,
@@ -417,7 +518,6 @@ fn fill_next_ls(
     }
 }
 
-#[allow(dead_code)]
 fn fill_next_ls_par(
     boundary_paths: &[PathSet],
     i: usize,
@@ -486,7 +586,7 @@ fn fill_next_ls_par(
         let patterns = get_expanded_next_patterns(&fat_pattern);
         let flip_pattern = get_flip_pattern(&free_position);
         let flip_pattern_node = get_node_flip_pattern(current, next, node_paths);
-        let flip_pattern_prev = get_prev_flip_pattern(current, next, prev);
+        let flip_pattern_prev = get_boundary_flip_pattern(current, next, prev);
         patterns
             .par_iter()
             .map(|&free_pattern| {
@@ -510,6 +610,178 @@ fn fill_next_ls_par(
     }
 }
 
+fn fill_next_ls_sub(
+    boundary_paths: &[PathSet],
+    i: usize,
+    node_paths: &PathSet,
+    ls_node: &[f64],
+    ls_hat: Option<&Vec<(usize, f64, usize)>>,
+    subsample_size: usize,
+) -> Vec<(usize, f64, usize)> {
+    if i == 0 {
+        let convert_current_to_next =
+            boundary_paths[0].get_intersection_pattern(&boundary_paths[1]);
+        // partition on R(D_0) and partition on R(D_0) and R(D_1)
+        let mut pattern = 0;
+        let mut ls_hat: Vec<(usize, f64, usize)> = Vec::new();
+        for partition in 0usize..(1 << boundary_paths[0].len() as usize) {
+            if partition != 0 {
+                let flip_bit = ((partition - 1) ^ partition).trailing_ones();
+                pattern = convert_current_to_next.flip_from_fast(pattern, flip_bit);
+            }
+            let update = ls_node[partition];
+            ls_hat.push((pattern, update, partition));
+        }
+        dedup(&mut ls_hat);
+        ls_hat
+    } else if i == boundary_paths.len() - 1 {
+        let (prev, current) = match &boundary_paths[i - 1..=i] {
+            [x, y] => (x, y),
+            _ => panic!(),
+        };
+        let convert_pattern_current_to_node = current.get_intersection_pattern(&node_paths);
+        let (free_position, fat_pattern) = get_select_array(current, prev);
+        let flip_pattern_node = get_node_flip_pattern(current, prev, node_paths);
+        let flip_pattern = get_flip_pattern(&free_position);
+        let mut ls_hat_next = vec![];
+        ls_hat.unwrap().into_iter().for_each(|&(pattern, lk, _)| {
+            // Convert `pattern` (i-1 and i) intersection pattern
+            // into gappy i-th pattern.
+            let mut pattern_current = get_expanded_next_pattern(&fat_pattern, pattern);
+            let mut node_pattern = convert_pattern_current_to_node.convert(pattern_current);
+            (0..((1 << free_position.len()) as usize)).for_each(|subst| {
+                if subst != 0 {
+                    let flipped_bit = ((subst - 1) ^ subst).count_ones() as usize;
+                    pattern_current ^= flip_pattern[flipped_bit];
+                    node_pattern ^= flip_pattern_node[flipped_bit];
+                }
+                let lk = lk + ls_node[node_pattern];
+                ls_hat_next.push((pattern_current, lk, pattern_current));
+            });
+        });
+        dedup(&mut ls_hat_next);
+        ls_hat_next
+    } else {
+        let (prev, current, next) = match &boundary_paths[i - 1..=i + 1] {
+            [x, y, z] => (x, y, z),
+            _ => panic!(),
+        };
+        let (free_position, fat_pattern) = get_select_array(current, prev);
+        let flip_pattern = get_flip_pattern(&free_position);
+        let flip_pattern_nega = get_flip_pattern(&fat_pattern);
+        let convert_pattern_current_to_node = current.get_intersection_pattern(&node_paths);
+        let flip_node = get_node_flip_pattern(current, prev, node_paths);
+        let flip_node_nega = get_node_flip_pattern_nega(current, prev, node_paths);
+        let flip_next = get_boundary_flip_pattern(current, prev, next);
+        let flip_next_nega = get_boundary_flip_pattern_nega(current, prev, next);
+        // This is the (i-1)-th pattern and lk.
+        let convert_pattern_current_to_next = boundary_paths[i].get_intersection_pattern(next);
+        let (mut current_pattern, mut node_pattern, mut next_pattern) = (0, 0, 0);
+        let mut prev_pattern = std::usize::MAX - 1;
+        let mut ls_hat_next = Vec::with_capacity(subsample_size);
+        for &(pattern, lk, _) in ls_hat.unwrap() {
+            // Convert `pattern` (i-1 and i) intersection pattern
+            // into gappy i-th pattern.
+            if prev_pattern + 1 != pattern {
+                current_pattern = get_expanded_next_pattern(&fat_pattern, pattern);
+                node_pattern = convert_pattern_current_to_node.convert(current_pattern);
+                next_pattern = convert_pattern_current_to_next.convert(current_pattern);
+            } else {
+                // Update by flipping...!
+                // First, erasing all the 1's in the free position.
+                current_pattern ^= flip_pattern[free_position.len()];
+                node_pattern ^= flip_node[free_position.len()];
+                next_pattern ^= flip_next[free_position.len()];
+                // Next, flip bit it should when the i-th bit of the intersection flop.
+                let flipped_bit = ((pattern - 1) ^ pattern).count_ones() as usize;
+                current_pattern ^= flip_pattern_nega[flipped_bit];
+                node_pattern ^= flip_node_nega[flipped_bit];
+                next_pattern ^= flip_next_nega[flipped_bit];
+            }
+            prev_pattern = pattern;
+            for subst in 0..((1 << free_position.len()) as usize) {
+                if subst != 0 {
+                    let flipped_bit = ((subst - 1) ^ subst).count_ones() as usize;
+                    current_pattern ^= flip_pattern[flipped_bit];
+                    node_pattern ^= flip_node[flipped_bit];
+                    next_pattern ^= flip_next[flipped_bit];
+                }
+                let lk = lk + ls_node[node_pattern];
+                ls_hat_next.push((next_pattern, lk, current_pattern));
+                if ls_hat_next.len() > 4 * subsample_size {
+                    discard_small_elements(&mut ls_hat_next, subsample_size);
+                }
+            }
+        }
+        discard_small_elements(&mut ls_hat_next, subsample_size);
+        dedup(&mut ls_hat_next);
+        ls_hat_next
+    }
+}
+
+fn discard_small_elements(xs: &mut Vec<(usize, f64, usize)>, num: usize) {
+    if num < xs.len() {
+        xs.select_nth_unstable_by(num, |a, b| (a.1).partial_cmp(&b.1).unwrap().reverse());
+        xs.truncate(num);
+    }
+}
+
+// Sort given vector by the first argument,
+// merge entries with the same first argument into the maximum second value.
+fn dedup(xs: &mut Vec<(usize, f64, usize)>) {
+    if 1 < xs.len() {
+        xs.par_sort_unstable_by_key(|x| x.0);
+        let mut pointer = 0;
+        let mut current = xs[0];
+        let len = xs.len();
+        for i in 1..len {
+            let x = xs[i];
+            if current.0 != x.0 {
+                xs[pointer] = current;
+                pointer += 1;
+                current = x;
+            } else if current.0 == x.0 && current.1 < x.1 {
+                current = x;
+            }
+        }
+        xs[pointer] = current;
+        xs.truncate(pointer + 1);
+    }
+}
+
+#[derive(Debug, Clone)]
+struct HeapElm(f64);
+
+impl std::cmp::PartialEq for HeapElm {
+    fn eq(&self, other: &Self) -> bool {
+        self.0 <= other.0 && other.0 <= self.0
+    }
+}
+
+impl std::cmp::Eq for HeapElm {}
+
+impl std::cmp::PartialOrd for HeapElm {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl std::cmp::Ord for HeapElm {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        if self.0 < other.0 {
+            std::cmp::Ordering::Greater
+        } else if other.0 < self.0 {
+            std::cmp::Ordering::Less
+        } else {
+            std::cmp::Ordering::Equal
+        }
+    }
+}
+
+// Get flipping pattern.
+// In other words, the i-th element of the return value would be
+// what we want to apply by XOR(^) operation to the node-partition pattern when the `i`-th read in the
+// *non*-intersection element is flipped.
 fn get_node_flip_pattern(current: &PathSet, next: &PathSet, paths_on_node: &PathSet) -> Vec<usize> {
     let mut flip_pattern = vec![0];
     let mut filled_bit = 0;
@@ -525,19 +797,22 @@ fn get_node_flip_pattern(current: &PathSet, next: &PathSet, paths_on_node: &Path
     flip_pattern
 }
 
-fn get_prev_flip_pattern(current: &PathSet, next: &PathSet, prev: &PathSet) -> Vec<usize> {
+// Get flipping pattern.
+// In other words, the i-th element of the return value would be
+// what we want to apply by XOR(^) operation to the node-partition pattern when the `i`-th read in the
+// intersection element is flipped.
+fn get_node_flip_pattern_nega(
+    current: &PathSet,
+    next: &PathSet,
+    paths_on_node: &PathSet,
+) -> Vec<usize> {
     let mut flip_pattern = vec![0];
     let mut filled_bit = 0;
-    let prev: Vec<_> = prev
-        .iter()
-        .copied()
-        .filter(|&n| current.contains(n))
-        .collect();
     for path_index in current
         .iter()
-        .filter(|&&path_index| !next.contains(path_index))
+        .filter(|&&path_index| next.contains(path_index))
     {
-        if let Ok(pointer) = prev.binary_search(path_index) {
+        if let Ok(pointer) = paths_on_node.paths.binary_search(path_index) {
             filled_bit |= 1 << pointer;
         }
         flip_pattern.push(filled_bit);
@@ -545,6 +820,40 @@ fn get_prev_flip_pattern(current: &PathSet, next: &PathSet, prev: &PathSet) -> V
     flip_pattern
 }
 
+// The i-th element of the return value is what we XOR-ing
+// to convert a partition on `flip`
+// when the i-th element of the `from` value not in the `to` is flipped.
+fn get_boundary_flip_pattern(from: &PathSet, to: &PathSet, flip: &PathSet) -> Vec<usize> {
+    let mut flip_pattern = vec![0];
+    let mut filled_bit = 0;
+    let flip: Vec<_> = flip.iter().copied().filter(|&n| from.contains(n)).collect();
+    for path_index in from.iter().filter(|&&path_index| !to.contains(path_index)) {
+        if let Ok(pointer) = flip.binary_search(path_index) {
+            filled_bit |= 1 << pointer;
+        }
+        flip_pattern.push(filled_bit);
+    }
+    flip_pattern
+}
+
+// The i-th element of the return value is what we XOR-ing
+// to convert a partition on `flip`
+// when the i-th element of the intersection of `from` and `to` is flipped.
+fn get_boundary_flip_pattern_nega(from: &PathSet, to: &PathSet, flip: &PathSet) -> Vec<usize> {
+    let mut flip_pattern = vec![0];
+    let mut filled_bit = 0;
+    let flip: Vec<_> = flip.iter().copied().filter(|&n| from.contains(n)).collect();
+    for path_index in from.iter().filter(|&&path_index| to.contains(path_index)) {
+        if let Ok(pointer) = flip.binary_search(path_index) {
+            filled_bit |= 1 << pointer;
+        }
+        flip_pattern.push(filled_bit);
+    }
+    flip_pattern
+}
+
+// If the i-th bit of the absent position read is flipped,
+// XOR with the i-th value of the return value.
 fn get_flip_pattern(position: &[usize]) -> Vec<usize> {
     let mut flip_pattern = vec![0];
     let mut filled_bit = 0;
@@ -555,6 +864,11 @@ fn get_flip_pattern(position: &[usize]) -> Vec<usize> {
     flip_pattern
 }
 
+// Return value:
+// The sum of the length of the two vector is equel to the length of `current`.
+// The i-th element of the 1st vector is the position of the `i`-th read in the
+// `current` set. Here, I mean the `i`-th is the rank in the intersection between `current` and `next`.
+// The i-th elment of the 2nd vector is the position of the `i`-th not-in-the-intersection element in the `current` vector.
 fn get_select_array(current: &PathSet, next: &PathSet) -> (Vec<usize>, Vec<usize>) {
     let (mut free_position, mut fat_pattern) = (vec![], vec![]);
     for (idx, &path_index) in current.iter().enumerate() {
@@ -565,6 +879,16 @@ fn get_select_array(current: &PathSet, next: &PathSet) -> (Vec<usize>, Vec<usize
         }
     }
     (free_position, fat_pattern)
+}
+
+// Expand the i-th bit of the `from` into `corresponding_location[i]`-th bit.
+fn get_expanded_next_pattern(corresponding_location: &[usize], from: usize) -> usize {
+    corresponding_location
+        .iter()
+        .enumerate()
+        .fold(0, |acc, (i, location)| {
+            acc | (((from >> i) & 0b1) << location)
+        })
 }
 
 // `corresponding_location`:The i-th element is the location of the i-th bit of the next_pattern in the current pattern.
@@ -786,6 +1110,7 @@ pub mod test {
         assert_eq!(conv.flip_from_fast(current, 3), current);
         assert_eq!(conv.flip_from_fast(current, 4), 0b001);
         assert_eq!(conv.flip_from_fast(current, 7), 0b111);
+        assert_eq!(conv.flip_from_fast(0b111, 7), 0b000);
     }
     #[test]
     fn get_flip_pattern_test() {
@@ -861,7 +1186,7 @@ pub mod test {
         let prev = PathSet::new(vec![0, 1, 2, 3]);
         let current = PathSet::new(vec![1, 2, 3, 4]);
         let next = PathSet::new(vec![4, 5, 6]);
-        let pattern = get_prev_flip_pattern(&current, &next, &prev);
+        let pattern = get_boundary_flip_pattern(&current, &next, &prev);
         let answer = vec![0, 0b001, 0b011, 0b111];
         assert_eq!(answer, pattern);
     }
@@ -934,5 +1259,23 @@ pub mod test {
         );
     }
     #[test]
-    fn convet_test() {}
+    fn dedup_test() {
+        let mut res = vec![(0, 1., 1), (0, 1.1, 2), (0, 0.9, 4)];
+        dedup(&mut res);
+        assert_eq!(res[0].0, 0);
+        assert_eq!(res[0].2, 2);
+        assert_eq!(res.len(), 1);
+        let mut res = vec![
+            (1, 0.9, 2),
+            (2, 0.8, 3),
+            (2, 0.7, 4),
+            (3, 0.9, 4),
+            (3, 10., 5),
+            (4, 10., 4),
+        ];
+        dedup(&mut res);
+        assert_eq!(res.len(), 4);
+        let res: Vec<_> = res.into_iter().map(|(x, _, y)| (x, y)).collect();
+        assert_eq!(res, vec![(1, 2), (2, 3), (3, 5), (4, 4)]);
+    }
 }

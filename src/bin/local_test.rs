@@ -15,12 +15,17 @@ fn main() {
     let max_length = 6;
     let error_rate = 0.05;
     let seed = 10121;
-    test(
-        template_length,
-        (duplication_rate, hap_dup_rate, hap_ins_rate, hap_del_rate),
-        (read_num, min_length, max_length, error_rate),
-        seed,
-    );
+    let run = |sub: Option<usize>| {
+        test(
+            template_length,
+            (duplication_rate, hap_dup_rate, hap_ins_rate, hap_del_rate),
+            (read_num, min_length, max_length, error_rate),
+            seed,
+            sub,
+        )
+    };
+    run(Some(1_000_000));
+    run(None);
 }
 
 fn test(
@@ -28,6 +33,7 @@ fn test(
     (duplication_rate, hap_dup_rate, hap_ins_rate, hap_del_rate): (f64, f64, f64, f64),
     (read_num, min_length, max_length, error_rate): (usize, usize, usize, f64),
     seed: u64,
+    sub: Option<usize>,
 ) {
     let mut rng: Xoroshiro128PlusPlus = SeedableRng::seed_from_u64(seed);
     let mut counter: HashMap<_, u64> = HashMap::new();
@@ -47,7 +53,7 @@ fn test(
             }
         })
         .collect();
-    eprintln!("{:?}", template);
+    // eprintln!("{:?}", template);
     // Let's make diploids.
     let hap1: Vec<_> = template
         .iter()
@@ -97,8 +103,12 @@ fn test(
         .collect();
     reads.shuffle(&mut rng);
     let start = std::time::Instant::now();
-    let result = path_phasing::phase(&reads, 20);
-    eprintln!("{:?}", (std::time::Instant::now() - start).as_millis());
+    let (lk, result) = path_phasing::phase_with_lk(&reads, 20, sub);
+    eprintln!("LK:{}", lk);
+    eprintln!(
+        "Elapsed:{:?}",
+        (std::time::Instant::now() - start).as_millis()
+    );
     let hap1 = result.get(&"0");
     let hap2_id = format!("{}", read_num - 1);
     let hap2 = result.get(hap2_id.as_str());

@@ -6,16 +6,18 @@ use std::collections::HashMap;
 fn main() {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
     // Parameters.
-    let template_length = 1000;
-    let duplication_rate = 0.0001;
-    let hap_dup_rate = 0.0001;
-    let hap_ins_rate = 0.0001;
-    let hap_del_rate = 0.0001;
-    let read_num = 30000;
+    let template_length = 500;
+    let duplication_rate = 0.01;
+    let hap_dup_rate = 0.001;
+    let hap_ins_rate = 0.001;
+    let hap_del_rate = 0.001;
+    let read_num = 3000;
     let min_length = 3;
     let max_length = 6;
     let error_rate = 0.05;
     let iteration: u64 = 10;
+    let sub = None;
+    // let sub = Some(10_000);
     let elapsed: Vec<_> = (0..iteration)
         .map(|seed| {
             let start = std::time::Instant::now();
@@ -24,6 +26,7 @@ fn main() {
                 (duplication_rate, hap_dup_rate, hap_ins_rate, hap_del_rate),
                 (read_num, min_length, max_length, error_rate),
                 seed,
+                sub,
             );
             let ti = (std::time::Instant::now() - start).as_millis();
             println!("{}", ti);
@@ -41,6 +44,7 @@ fn test(
     (duplication_rate, hap_dup_rate, hap_ins_rate, hap_del_rate): (f64, f64, f64, f64),
     (read_num, min_length, max_length, error_rate): (usize, usize, usize, f64),
     seed: u64,
+    sub: Option<usize>,
 ) {
     debug!("Start Test module");
     let mut rng: Xoroshiro128PlusPlus = SeedableRng::seed_from_u64(seed);
@@ -111,7 +115,7 @@ fn test(
         })
         .collect();
     reads.shuffle(&mut rng);
-    let result = path_phasing::phase(&reads, 22);
+    let (_, result) = path_phasing::phase_with_lk(&reads, 22, sub);
     let hap1 = result.get(&"0");
     let hap2_id = format!("{}", read_num - 1);
     let hap2 = result.get(hap2_id.as_str());
@@ -130,7 +134,7 @@ fn test(
         .count();
     let error_rate = errors as f64 / (reads.len() as f64);
     eprintln!("Error Rate:{:?}", error_rate);
-    assert!(error_rate < 0.05);
+    assert!(error_rate < 0.1);
 }
 
 fn sim_read<R: Rng>(
