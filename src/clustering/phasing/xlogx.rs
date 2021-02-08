@@ -15,6 +15,7 @@
 //     println!("const XLOGX:[f64;50] = [{}];", xs.join(","));
 // }
 // ```
+#[allow(dead_code)]
 pub const XLOGX: [f64; 50] = [
     0.,
     0.,

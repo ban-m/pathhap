@@ -12,12 +12,12 @@ To use CLI, you only need a utf-8 encoded tsv file FILE, which contents RECORDS 
 
 RECORDS = (RECORD\n)^*
 
-RECORD = (ID)\t(NODE:CLUSTER\t)^+
+RECORD = (ID)(,NODE:CLUSTER)^+
 
-Here, ID is a string(,or integer) without tab character, and NODE and CLUSTER are integer.
+Here, ID is a string(,or integer) without comma, and NODE and CLUSTER are integer.
 For example,
 
-RECORD = TestRead  10:0    11:0    2341:13213  343:324
+RECORD = TestRead,10:0,11:0,2341:13213,343:324
 
 As you can see, the number of node shouldn't be consective, so, feel easy. The graph containing all of reads would be created on the fly.
 

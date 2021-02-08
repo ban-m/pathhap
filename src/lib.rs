@@ -15,6 +15,7 @@ pub mod em_progressive;
 mod find_union;
 pub use clustering::haplotype_cc;
 pub use clustering::phase_cc;
+mod markov_model;
 /// Phasing API.
 /// Phase given paths into two haplotypes.
 /// # Example
@@ -59,21 +60,27 @@ pub use clustering::phase_cc;
 ///         ("ID4".to_string(), 1)
 ///     ]
 /// );
-pub fn phase(paths: &[(String, Vec<(u64, u64)>)], max_occ: usize) -> HashMap<&str, u8> {
-    phase_with_lk(paths, max_occ, None).1
+pub fn phase(
+    paths: &[(String, Vec<(u64, u64)>)],
+    max_occ: usize,
+    min_occ: usize,
+) -> HashMap<&str, u8> {
+    phase_with_lk(paths, max_occ, min_occ, None).1
 }
 
 pub fn phase_fast(
     paths: &[(String, Vec<(u64, u64)>)],
     max_occ: usize,
+    min_occ: usize,
     subsample_size: usize,
 ) -> HashMap<&str, u8> {
-    phase_with_lk(paths, max_occ, Some(subsample_size)).1
+    phase_with_lk(paths, max_occ, min_occ, Some(subsample_size)).1
 }
 
 pub fn phase_with_lk(
     paths: &[(String, Vec<(u64, u64)>)],
     max_occ: usize,
+    min_occ: usize,
     subsample_size: Option<usize>,
 ) -> (f64, HashMap<&str, u8>) {
     // First, decompose into each connected component.
@@ -87,9 +94,12 @@ pub fn phase_with_lk(
         .iter()
         .map(|paths| {
             let normed_paths = normalize_path(paths);
-            let phased_paths = phase_cc(&normed_paths, max_occ, subsample_size);
+            let phased_paths = phase_cc(&normed_paths, max_occ, min_occ, subsample_size);
             // Polish clustering by EM algorthm
+            let start = std::time::Instant::now();
             let (phased_paths, lk) = em_progressive::em_clustering(&normed_paths, &phased_paths);
+            let end = std::time::Instant::now();
+            debug!("EM clustering:{}ms", (end - start).as_millis());
             debug!("Maximum likelihood:{:.3}", lk);
             total_lk += lk;
             phased_paths
@@ -261,7 +271,7 @@ mod test {
             ("ID3".to_string(), vec![(0, 1), (1, 1), (2, 1), (3, 1)]),
             ("ID4".to_string(), vec![(0, 1), (1, 1), (2, 1), (3, 1)]),
         ];
-        let result = phase(&paths, 14);
+        let result = phase(&paths, 14, 4);
         eprintln!("{:?}", result);
         assert_eq!(result["ID1"], result["ID2"]);
         assert_eq!(result["ID3"], result["ID4"]);
@@ -284,7 +294,7 @@ mod test {
         );
         let path4 = ("ID4".to_string(), vec![(10, 1), (3, 1), (10, 1)]);
         let paths = vec![path1, path2, path3, path4];
-        let result = phase(&paths, 14);
+        let result = phase(&paths, 14, 4);
         assert_eq!(result["ID1"], result["ID2"]);
         assert_eq!(result["ID3"], result["ID4"]);
         assert_ne!(result["ID1"], result["ID4"]);
@@ -298,7 +308,7 @@ mod test {
             ("ID3".to_string(), vec![(0, 1), (1, 1), (2, 1), (3, 1)]),
             ("ID4".to_string(), vec![(0, 1), (1, 1), (2, 1), (3, 1)]),
         ];
-        let result = phase_fast(&paths, 14, 100000);
+        let result = phase_fast(&paths, 14, 4, 100000);
         eprintln!("{:?}", result);
         assert_eq!(result["ID1"], result["ID2"]);
         assert_eq!(result["ID3"], result["ID4"]);
@@ -321,7 +331,7 @@ mod test {
         );
         let path4 = ("ID4".to_string(), vec![(10, 1), (3, 1), (10, 1)]);
         let paths = vec![path1, path2, path3, path4];
-        let result = phase_fast(&paths, 14, 10101010);
+        let result = phase_fast(&paths, 14, 4, 10101010);
         assert_eq!(result["ID1"], result["ID2"]);
         assert_eq!(result["ID3"], result["ID4"]);
         assert_ne!(result["ID1"], result["ID4"]);
@@ -386,7 +396,7 @@ mod test {
         let template2: Vec<_> = (0..10).map(|x| (x, 1)).collect();
         let min_len = 3;
         let max_len = 6;
-        let path_num = 10;
+        let path_num = 20;
         let mut rng: Xoshiro256PlusPlus = SeedableRng::seed_from_u64(34089);
         let mut paths: Vec<_> = (0..path_num)
             .map(|i| {
@@ -399,7 +409,7 @@ mod test {
             })
             .collect();
         paths.shuffle(&mut rng);
-        let result = phase(&paths, 20);
+        let result = phase(&paths, 20, 4);
         let cluster1 = *result.get("0").unwrap();
         let cluster2: String = format!("{}", path_num - 1);
         let cluster2 = *result.get(cluster2.as_str()).unwrap();
@@ -456,7 +466,7 @@ mod test {
             })
             .collect();
         paths.shuffle(&mut rng);
-        let result = phase(&paths, 20);
+        let result = phase(&paths, 20, 4);
         let cluster1 = *result.get("0").unwrap();
         let cluster2: String = format!("{}", path_num - 1);
         let cluster2 = *result.get(cluster2.as_str()).unwrap();
@@ -497,7 +507,7 @@ mod test {
             })
             .collect();
         paths.shuffle(&mut rng);
-        let result = phase(&paths, 20);
+        let result = phase(&paths, 20, 4);
         {
             let mut result: Vec<_> = result.iter().collect();
             result.sort();
@@ -563,7 +573,7 @@ mod test {
             })
             .collect();
         paths.shuffle(&mut rng);
-        let result = phase(&paths, 20);
+        let result = phase(&paths, 20, 4);
         let cluster1 = *result.get("0").unwrap();
         let cluster2: String = format!("{}", path_num - 1);
         let cluster2 = *result.get(cluster2.as_str()).unwrap();
@@ -614,7 +624,7 @@ mod test {
         // eprintln!("{:?}", template2);
         let min_len = 3;
         let max_len = 6;
-        let path_num = 10;
+        let path_num = 30;
         let mut paths: Vec<_> = (0..path_num)
             .map(|i| {
                 let path = if i < path_num / 2 {
@@ -627,7 +637,7 @@ mod test {
             .collect();
         paths.shuffle(&mut rng);
 
-        let result = phase(&paths, 20);
+        let result = phase(&paths, 20, 4);
         let cluster1 = *result.get("0").unwrap();
         let cluster2: String = format!("{}", path_num - 1);
         let cluster2 = *result.get(cluster2.as_str()).unwrap();
@@ -649,7 +659,7 @@ mod test {
         let min_len = 3;
         let max_len = 6;
         let err = 0.1;
-        let path_num = 10;
+        let path_num = 20;
         let mut rng: Xoshiro256PlusPlus = SeedableRng::seed_from_u64(34089);
         let mut paths: Vec<_> = (0..path_num)
             .map(|i| {
@@ -662,7 +672,7 @@ mod test {
             })
             .collect();
         paths.shuffle(&mut rng);
-        let result = phase(&paths, 20);
+        let result = phase(&paths, 20, 4);
         let cluster1 = *result.get("0").unwrap();
         let cluster2: String = format!("{}", path_num - 1);
         let cluster2 = *result.get(cluster2.as_str()).unwrap();
@@ -793,7 +803,7 @@ mod test {
             })
             .collect();
         paths.shuffle(&mut rng);
-        let result = phase_fast(&paths, 20, 1_000);
+        let result = phase_fast(&paths, 20, 4, 1_000);
         let cluster1 = *result.get("0").unwrap();
         let cluster2: String = format!("{}", path_num - 1);
         let cluster2 = *result.get(cluster2.as_str()).unwrap();
@@ -850,7 +860,7 @@ mod test {
             })
             .collect();
         paths.shuffle(&mut rng);
-        let result = phase_fast(&paths, 20, 1_000);
+        let result = phase_fast(&paths, 20, 4, 1_000);
         let cluster1 = *result.get("0").unwrap();
         let cluster2: String = format!("{}", path_num - 1);
         let cluster2 = *result.get(cluster2.as_str()).unwrap();
@@ -891,7 +901,7 @@ mod test {
             })
             .collect();
         paths.shuffle(&mut rng);
-        let result = phase_fast(&paths, 20, 1_000);
+        let result = phase_fast(&paths, 20, 4, 1_000);
         {
             let mut result: Vec<_> = result.iter().collect();
             result.sort();
@@ -957,7 +967,7 @@ mod test {
             })
             .collect();
         paths.shuffle(&mut rng);
-        let result = phase_fast(&paths, 20, 1_000);
+        let result = phase_fast(&paths, 20, 4, 1_000);
         let cluster1 = *result.get("0").unwrap();
         let cluster2: String = format!("{}", path_num - 1);
         let cluster2 = *result.get(cluster2.as_str()).unwrap();
@@ -1008,7 +1018,7 @@ mod test {
         // eprintln!("{:?}", template2);
         let min_len = 3;
         let max_len = 6;
-        let path_num = 10;
+        let path_num = 20;
         let mut paths: Vec<_> = (0..path_num)
             .map(|i| {
                 let path = if i < path_num / 2 {
@@ -1020,7 +1030,7 @@ mod test {
             })
             .collect();
         paths.shuffle(&mut rng);
-        let result = phase_fast(&paths, 20, 1_000);
+        let result = phase_fast(&paths, 20, 4, 1_000);
         let cluster1 = *result.get("0").unwrap();
         let cluster2: String = format!("{}", path_num - 1);
         let cluster2 = *result.get(cluster2.as_str()).unwrap();
@@ -1042,7 +1052,7 @@ mod test {
         let min_len = 3;
         let max_len = 6;
         let err = 0.1;
-        let path_num = 10;
+        let path_num = 100;
         let mut rng: Xoshiro256PlusPlus = SeedableRng::seed_from_u64(34089);
         let mut paths: Vec<_> = (0..path_num)
             .map(|i| {
@@ -1055,7 +1065,7 @@ mod test {
             })
             .collect();
         paths.shuffle(&mut rng);
-        let result = phase_fast(&paths, 20, 1_000);
+        let result = phase_fast(&paths, 20, 4, 1_000);
         let cluster1 = *result.get("0").unwrap();
         let cluster2: String = format!("{}", path_num - 1);
         let cluster2 = *result.get(cluster2.as_str()).unwrap();

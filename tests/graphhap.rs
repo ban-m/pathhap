@@ -121,7 +121,7 @@ fn test(
     for _ in 0..3 {
         reads.shuffle(&mut rng);
         //let (l, res) = path_phasing::phase_with_lk(&reads, 20, None);
-        let (l, res) = path_phasing::phase_with_lk(&reads, 20, Some(10_000));
+        let (l, res) = path_phasing::phase_with_lk(&reads, 20, 6, Some(10_000));
         if lk < l {
             result = res.into_iter().map(|(id, x)| (id.to_string(), x)).collect();
             lk = l;

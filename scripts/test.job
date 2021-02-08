@@ -1,0 +1,12 @@
+#!/bin/bash
+#$ -S /bin/bash
+#$ -N PathHap
+#$ -cwd
+#$ -pe smp 24
+#$ -o ./result/logfiles.log
+#$ -j y
+#$ -V
+#$ -t 1:5
+set -eu
+coverages=(0 10 20 30 40 50)
+${PWD}/target/release/pathhap_test ${coverages[$SGE_TASK_ID]} > ${PWD}/result/pathhap_test_faster_${SGE_TASK_ID}.out

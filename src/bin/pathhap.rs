@@ -1,5 +1,6 @@
 use clap::{App, Arg, SubCommand};
-use log::error;
+use log::{debug, error};
+use std::collections::HashMap;
 use std::io::{BufRead, BufReader};
 fn subcommand_phasing() -> App<'static, 'static> {
     SubCommand::with_name("phasing")
@@ -24,6 +25,7 @@ fn subcommand_phasing() -> App<'static, 'static> {
         .arg(
             Arg::with_name("threads")
                 .long("threads")
+                .value_name("THREADS")
                 .takes_value(true)
                 .default_value("1")
                 .help("Number of threads"),
@@ -32,9 +34,42 @@ fn subcommand_phasing() -> App<'static, 'static> {
             Arg::with_name("max_coverage")
                 .long("max_cov")
                 .short("m")
+                .value_name("COVERAGE")
                 .takes_value(true)
                 .default_value("20")
-                .help("Maximum number of paths on a boundary nodes"),
+                .help("Maximum number of paths on each boundary"),
+        )
+        .arg(
+            Arg::with_name("min_coverage")
+                .long("min_cov")
+                .value_name("COVERAGE")
+                .takes_value(true)
+                .default_value("8")
+                .help("Minimum number of paths on each node."),
+        )
+        .arg(
+            Arg::with_name("retry")
+                .long("retry")
+                .value_name("RETRY")
+                .takes_value(true)
+                .default_value("7")
+                .help("Execute algorithm in [RETRY] times, then pick the best one."),
+        )
+        .arg(
+            Arg::with_name("subsample")
+                .long("subsample")
+                .value_name("SUBSAMPLE")
+                .takes_value(true)
+                .default_value("100000")
+                .help("Takes top [SUBSAMPLE] bipartition on from each boundary."),
+        )
+        .arg(
+            Arg::with_name("seed")
+                .long("seed")
+                .value_name("SEED")
+                .takes_value(true)
+                .default_value("24")
+                .help("Seed for a pseudo random number generator."),
         )
 }
 
@@ -56,7 +91,7 @@ fn subcommand_haplotyping() -> App<'static, 'static> {
                 .value_name("INPUT")
                 .takes_value(true)
                 .required(true)
-                .help("Input file(TSV). See README.md for the format."),
+                .help("Input file(CSV). See README.md for the format."),
         )
         .arg(
             Arg::with_name("threads")
@@ -117,27 +152,38 @@ fn main() -> std::io::Result<()> {
     };
     let reuslt = match matches.subcommand() {
         ("phasing", Some(sub_m)) => {
-            let max_cov = sub_m.value_of("max_coverage").unwrap();
-            let max_cov: usize = match max_cov.parse::<usize>() {
-                Ok(res) => res,
-                Err(why) => panic!(
-                    "Couldn't parse {}. Please input a valid value(Integer):{:?}",
-                    max_cov, why
-                ),
-            };
-            path_phasing::phase(&paths, max_cov)
+            let max_cov: usize = sub_m.value_of("max_coverage").map(parse_to_usize).unwrap();
+            let min_cov = sub_m.value_of("min_coverage").map(parse_to_usize).unwrap();
+            let retry = sub_m.value_of("retry").map(parse_to_usize).unwrap() as u64;
+            let subsample = sub_m.value_of("subsample").map(parse_to_usize);
+            let seed = sub_m.value_of("seed").map(parse_to_usize).unwrap();
+            let seed = seed as u64;
+            use rand::{seq::SliceRandom, Rng, SeedableRng};
+            let mut rng: rand_xoshiro::Xoroshiro128PlusPlus = SeedableRng::seed_from_u64(seed);
+            use rayon::prelude::*;
+            let seed = rng.gen::<u64>();
+            (0..retry)
+                .into_par_iter()
+                .map(|i| {
+                    let mut paths = paths.clone();
+                    let mut rng: rand_xoshiro::Xoroshiro128PlusPlus =
+                        SeedableRng::seed_from_u64(seed + i);
+                    paths.shuffle(&mut rng);
+                    let (lk, asn) =
+                        path_phasing::phase_with_lk(&paths, max_cov, min_cov, subsample);
+                    let asn: HashMap<String, _> =
+                        asn.into_iter().map(|(k, v)| (k.to_string(), v)).collect();
+                    debug!("Likelihood\t{}\t{:?}", i, lk);
+                    (lk, asn)
+                })
+                .max_by(|a, b| (a.0).partial_cmp(&(b.0)).unwrap())
+                .unwrap()
+                .1
         }
         ("haplotyping", Some(sub_m)) => {
             error!("This functionality is under development.");
             error!("Please use `phasing` module instead.");
-            let max_len = sub_m.value_of("max_prefetch").unwrap();
-            let max_len: usize = match max_len.parse() {
-                Ok(res) => res,
-                Err(why) => panic!(
-                    "Couldn't parse {}. Please input a valid value(Integer):{:?}",
-                    max_len, why
-                ),
-            };
+            let max_len = sub_m.value_of("max_prefetch").map(parse_to_usize).unwrap();
             let error_rate = sub_m.value_of("error_rate").unwrap();
             let error_rate: f64 = match error_rate.parse() {
                 Ok(res) => res,
@@ -147,6 +193,9 @@ fn main() -> std::io::Result<()> {
                 ),
             };
             path_phasing::haplotyping(&paths, max_len, error_rate)
+                .into_iter()
+                .map(|(k, v)| (k.to_string(), v))
+                .collect()
         }
         _ => unreachable!(),
     };
@@ -165,7 +214,7 @@ fn get_input_file(path: &str) -> std::io::Result<Vec<PathWithID>> {
         rdr.lines()
             .filter_map(|x| x.ok())
             .filter_map(|line| {
-                let mut line = line.split('\t');
+                let mut line = line.split(',');
                 let id = line.next()?.to_string();
                 let path: Vec<_> = line
                     .map(|unit| {
@@ -194,4 +243,14 @@ fn get_input_file(path: &str) -> std::io::Result<Vec<PathWithID>> {
             })
             .collect()
     })
+}
+
+fn parse_to_usize(input: &str) -> usize {
+    match input.parse::<usize>() {
+        Ok(res) => res,
+        Err(why) => panic!(
+            "Couldn't parse {}. Please input a valid value(Integer):{:?}",
+            input, why
+        ),
+    }
 }
