@@ -152,15 +152,15 @@ fn downsampling_up_to<'a>(
         });
         reads_to_be_used.push((removed_path_id, removed_path))
     }
-    debug!("CovSummary\tIndex\tTarget\tBoundary\tNode");
-    for (i, ((t, b), n)) in target_cov
-        .iter()
-        .zip(boundary_path_number.iter())
-        .zip(node_counts.iter())
-        .enumerate()
-    {
-        debug!("CovSummary\t{}\t{}\t{}\t{}", i, t, b, n);
-    }
+    // debug!("CovSummary\tIndex\tTarget\tBoundary\tNode");
+    // for (i, ((t, b), n)) in target_cov
+    //     .iter()
+    //     .zip(boundary_path_number.iter())
+    //     .zip(node_counts.iter())
+    //     .enumerate()
+    // {
+    //     debug!("CovSummary\t{}\t{}\t{}\t{}", i, t, b, n);
+    // }
     for (node, _) in node_counts.iter().enumerate() {
         if reads_to_be_used
             .iter()
@@ -298,10 +298,10 @@ fn phase_paths_fast(
         let start = std::time::Instant::now();
         let next_ls = fill_next_ls_sub(&boundary_paths, i, &node_paths[i], ls_node, last_ls, sub);
         let end = std::time::Instant::now();
-        debug!("NODE\t{}\t{}", i, (end - start).as_millis());
+        // debug!("NODE\t{}\t{}", i, (end - start).as_millis());
         ls_hat.push(next_ls);
     }
-    debug!("GHap:{}ms", (std::time::Instant::now() - start).as_millis());
+    // debug!("GHap:{}ms", (std::time::Instant::now() - start).as_millis());
     // Traceback.
     let (argmax, max_lk, _max_partition) = ls_hat
         .pop()
